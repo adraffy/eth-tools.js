@@ -37,10 +37,48 @@ function bytes_from_hex(s) {
 	return v;
 }
 
-// returns hex from ArrayLike
+// returns hex from Uint8Array
 // no 0x-
 function hex_from_bytes(v) {
-	return  [...v].map(x => x.toString(16).padStart(2, '0')).join('');
+	return [...v].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+
+// returns str from Uint8Array
+function str_from_bytes(v) {
+	/*
+	let cps = [];
+	let pos = 0;
+	let cp = 0;
+	let need = 0;
+	while (pos < v.length) {
+		let b0 = v[pos++];
+		if (need > 0) {
+			if ((b0 >> 6) != 2) throw new Error('malformed utf8: expected continuation')
+			cp = (cp << 6) | (b0 & 0b111111);
+			if (--need == 0) cps.push(cp);
+			continue;
+		}
+		if (b0 < 0b01111111) {
+			cps.push(b0);
+		} else if (b0 < 0b11011111) {
+			cp = b0 & 0b11111;
+			need = 1;
+		} else if (b0 < 0b11101111) {
+			cp = b0 & 0b1111;
+			need = 2;
+		} else {
+			cp = b0 & 0b111;
+			need = 3;
+		}
+	}
+	if (need > 0) throw new RangeError('malformed utf8: expected more bytes');
+	return String.fromCodePoint(...ret);
+	*/
+	try {
+		return decodeURIComponent(escape(String.fromCharCode(...v)));
+	} catch (err) {
+		throw new Error('malformed utf8');
+	}
 }
 
 class KeccakHasher {
@@ -116,6 +154,7 @@ class KeccakHasher {
 		this.block_index = block_index;
 	}	
 	// idempotent
+	// called automatically by subclasses
 	finalize() {
 		let {sponge, suffix, ragged_shift, block_index, block_count} = this;
 		if (ragged_shift) {
@@ -126,7 +165,6 @@ class KeccakHasher {
 		sponge[block_count - 1] ^= 0x80000000;
 		permute32(sponge);
 		this.ragged_shift = -1; // mark as finalized
-		return this;
 	}
 }
 
@@ -359,6 +397,14 @@ function permute32(s) {
 	}
 }
 
+function method_signature(x) {
+	if (typeof x === 'string') {	
+		return keccak().update(x).hex.slice(0, 8);
+	} else {
+		throw new TypeError('unknown input');
+	}
+}
+
 function number_from_abi(x) {
 	if (typeof x === 'string') {
 		if (/^(0x)?[a-f0-9]{0,12}$/i.test(x)) return parseInt(x, 16); // is this a fast path?
@@ -379,6 +425,7 @@ function number_from_abi(x) {
 	}
 	let n = 0;
 	for (let i of x) n = (n * 256) + i;
+	if (!Number.isSafeInteger(n)) throw new RangeError('overflow');
 	return n;
 }
 
@@ -397,6 +444,7 @@ class ABIDecoder {
 		this.pos = end;
 		return v;
 	}
+	big(n = 32) { return BigInt('0x' + hex_from_bytes(this.read(n))); }
 	number(n = 32) { return number_from_abi(this.read(n)); }
 	string() {
 		let pos = this.number();
@@ -407,15 +455,15 @@ class ABIDecoder {
 		pos = end;
 		end += len;
 		if (end > buf.length) throw new RangeError('overflow');
-		return String.fromCharCode.apply(null, buf.subarray(pos, end));
+		return decodeURIComponent([...buf.subarray(pos, end)].map(x => `%${x.toString(16).padStart(2, '0')}`).join(''));
 	}
 	addr(checksum = true) {
 		if (this.number(12) != 0) throw new TypeError('expected zero');
 		let v = this.read(20);
 		let addr = hex_from_bytes(v);
-		if (checksum) {
-			let hash = keccak().update(v).hex;
-			addr = [...addr].map((x, i) => hash[i].charCodeAt(0) >= 56 ? x.toUpperCase() : x).join('');
+		if (checksum) { // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-55.md
+			let hash = keccak().update(addr).hex;
+			addr = [...addr].map((x, i) => hash.charCodeAt(i) >= 56 ? x.toUpperCase() : x).join('');
 		}
 		return `0x${addr}`; 
 	}
@@ -452,8 +500,8 @@ class ABIEncoder {
 		this.pos = 0;
 		return this; // chainable
 	}
-	get hex_encoded() { return '0x' + hex_from_bytes(this.encoded); }
-	get encoded() {
+	build_hex() { return '0x' + hex_from_bytes(this.build()); }
+	build() {
 		let {pos, tails} = this;
 		let len = tails.reduce((a, [_, v]) => v.length, 0);
 		if (len > 0) {
@@ -479,6 +527,12 @@ class ABIEncoder {
 		}
 		this.pos = end;
 		return buf.subarray(pos, end);
+	}
+	big(i, n = 32) {
+		let v = bytes_from_hex(i.toString(16));
+		if (v.length > n) v = v.subarray(v.length - n);
+		this.alloc(n).set(v, n - v.length);
+		return this;
 	}
 	number(i, n = 32) {
 		set_bytes_to_number(this.alloc(n), i);
@@ -589,4 +643,4 @@ function smol_provider(url) {
 	};
 }
 
-export { ABIDecoder, ABIEncoder, bytes_from_hex, bytes_from_str, hex_from_bytes, keccak, number_from_abi, sha3, shake, smol_provider };
+export { ABIDecoder, ABIEncoder, bytes_from_hex, bytes_from_str, hex_from_bytes, keccak, method_signature, number_from_abi, sha3, shake, smol_provider, str_from_bytes };

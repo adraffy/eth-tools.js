@@ -1,5 +1,13 @@
 import {bytes_from_str, bytes_from_hex, hex_from_bytes, keccak} from '@adraffy/keccak';
 
+export function method_signature(x) {
+	if (typeof x === 'string') {	
+		return keccak().update(x).hex.slice(0, 8);
+	} else {
+		throw new TypeError('unknown input');
+	}
+}
+
 export function number_from_abi(x) {
 	if (typeof x === 'string') {
 		if (/^(0x)?[a-f0-9]{0,12}$/i.test(x)) return parseInt(x, 16); // is this a fast path?
@@ -39,7 +47,7 @@ export class ABIDecoder {
 		this.pos = end;
 		return v;
 	}
-	bigint(n = 32) { return BigInt('0x' + hex_from_bytes(this.read(n))); }
+	big(n = 32) { return BigInt('0x' + hex_from_bytes(this.read(n))); }
 	number(n = 32) { return number_from_abi(this.read(n)); }
 	string() {
 		let pos = this.number();
@@ -50,15 +58,15 @@ export class ABIDecoder {
 		pos = end;
 		end += len;
 		if (end > buf.length) throw new RangeError('overflow');
-		return String.fromCharCode.apply(null, buf.subarray(pos, end));
+		return decodeURIComponent([...buf.subarray(pos, end)].map(x => `%${x.toString(16).padStart(2, '0')}`).join(''));
 	}
 	addr(checksum = true) {
 		if (this.number(12) != 0) throw new TypeError('expected zero');
 		let v = this.read(20);
 		let addr = hex_from_bytes(v);
-		if (checksum) {
-			let hash = keccak().update(v).hex;
-			addr = [...addr].map((x, i) => hash[i].charCodeAt(0) >= 56 ? x.toUpperCase() : x).join('');
+		if (checksum) { // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-55.md
+			let hash = keccak().update(addr).hex;
+			addr = [...addr].map((x, i) => hash.charCodeAt(i) >= 56 ? x.toUpperCase() : x).join('');
 		}
 		return `0x${addr}`; 
 	}
@@ -95,7 +103,7 @@ export class ABIEncoder {
 		this.pos = 0;
 		return this; // chainable
 	}
-	build_hex() { return '0x' + hex_from_bytes(this.encoded); }
+	build_hex() { return '0x' + hex_from_bytes(this.build()); }
 	build() {
 		let {pos, tails} = this;
 		let len = tails.reduce((a, [_, v]) => v.length, 0);
@@ -123,7 +131,7 @@ export class ABIEncoder {
 		this.pos = end;
 		return buf.subarray(pos, end);
 	}
-	bigint(i, n = 32) {
+	big(i, n = 32) {
 		let v = bytes_from_hex(i.toString(16));
 		if (v.length > n) v = v.subarray(v.length - n);
 		this.alloc(n).set(v, n - v.length);

@@ -1,27 +1,35 @@
 # eth-provider.js
 Tiny ES6 ABIDecoder, ABIEncoder, and Infura Ethereum WS Provider.
 
-## ABIDecoder
+**This is under construction, DO NOT USE!**
+
+### ABIDecoder
 ```Javascript
 import {ABIDecoder} from '@adraffy/eth-provider';
 
 let dec = ABIDecoder.from_hex('...')
 let s = dec.string(); // read a string
 let i = dec.number(); // read u256 as number, throws if too big
-let n = dec.bigint(); // read u256 as BigInt
+let n = dec.big();    // read u256 as BigInt
 let a = dec.addr();   // read address (0x-prefixed hex-string w/checksum)
 ```
 
-## ABIEncoder
+### ABIEncoder
 ```Javascript
-import {ABIDecoder} from '@adraffy/eth-provider';
+import {ABIEncoder} from '@adraffy/eth-provider';
 
-let enc = new ABIDecoder();
+let enc = new ABIEncoder();
 enc.string('hello');
 enc.number(1234);
-enc.bigint(1152921504606846976n);
-enc.addr('0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e');
+enc.big(1152921504606846976n);
+enc.addr('0x4976fb03C32e5B8cfe2b6cCB31c09Ba78EBaBa41');
 
-let v = enc.build(); // Uint8Array
+let v = enc.build();     // Uint8Array
 let s = enc.build_hex(); // 0x-prefixed hex-string
+```
+
+### InfuraWSProvider
+
+```Javascript
+// TODO
 ```
