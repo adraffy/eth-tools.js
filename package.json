@@ -1,0 +1,35 @@
+{
+  "name": "@adraffy/eth-provider",
+  "version": "0.0.1",
+  "description": "Tiny ES6 Ethereum Provider ",
+  "keywords": [
+    "Ethereum",
+    "ETH Provider"
+  ],
+  "type": "module",
+  "main": "eth-provider.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adraffy/eth-provider.js.git"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/adraffy/eth-provider.js/issues"
+  },
+  "homepage": "https://github.com/adraffy/eth-provider.js#readme",
+  "author": {
+    "name": "raffy.eth",
+    "email": "raffy@me.com",
+    "url": "http://raffy.antistupid.com"
+  },
+  "scripts": {
+    "test": "node test/test.js",
+    "dist": "rollup -c && uglifyjs dist/eth-provider.js --compress --mangle --toplevel --output dist/eth-provider.min.js"
+  },
+  "dependencies": {
+    "@adraffy/keccak": "^1.1.3"
+  },
+  "devDependencies": {
+    "@rollup/plugin-node-resolve": "^13.0.6"
+  }
+}
