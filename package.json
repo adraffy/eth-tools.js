@@ -1,10 +1,12 @@
 {
   "name": "@adraffy/eth-provider",
   "version": "0.0.1",
-  "description": "Tiny ES6 Ethereum Provider ",
+  "description": "ETH Tools",
   "keywords": [
-    "Ethereum",
-    "ETH Provider"
+    "ethereum",
+    "provider",
+    "infura",
+    "abi"
   ],
   "type": "module",
   "main": "eth-provider.js",
