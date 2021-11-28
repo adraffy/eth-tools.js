@@ -1976,7 +1976,7 @@ async function ens_avatar(provider, input) {
 // https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/TextResolver.sol
 async function ens_text_record(provider, input, keys) {
 	if (typeof keys === 'string') keys = [keys];
-	if (!Array.isArray(keys)) throw new TypeError('expected key or array of keys');
+	if (!Array.isArray(keys)) throw new TypeError('Expected key or array of keys');
 	let ret = await resolve_name_from_input(provider, input);
 	let {node, resolver} = ret;
 	if (!is_null_hex(resolver)) {
@@ -2040,7 +2040,7 @@ async function ens_pubkey_record(provider, input) {
 function resolve_addr_type_from_input(x) {
 	if (typeof x === 'string') {
 		let type = ADDR_TYPES[x];
-		if (typeof type !== 'number') throw new Error(`unknown address type for name: ${x}`);
+		if (typeof type !== 'number') throw new Error(`Unknown address type for name: ${x}`);
 		return [x, type];
 	} else if (typeof x === 'number') {		
 		let pos = Object.values(ADDR_TYPES).indexOf(x);
@@ -2052,7 +2052,7 @@ function resolve_addr_type_from_input(x) {
 		}
 		return [name, x];
 	} else {
-		throw new TypeError('expected address type or name');
+		throw new TypeError('Expected address type or name');
 	}
 }
 
@@ -2078,15 +2078,15 @@ async function resolve_name_from_input(provider, input) {
 			return {...ret, node, resolver, [RESOLVED]: resolved_value()};
 		}
 	}
-	throw new TypeError('Expected name, address, or previous input');
+	throw new TypeError('Expected name or address');
 }
 
 async function call_registry_resolver(provider, node) {
 	const SIG = '0178b8bf'; // resolver(bytes32)
 	try {
 		return ABIDecoder.from_hex(await call(provider, ENS_REGISTRY, ABIEncoder.method(SIG).add_hex(node))).addr();
-	} catch (err) {
-		throw wrap_error('Invalid response from registry', err);
+	} catch (cause) {
+		throw new Error('Invalid response from registry', {cause});
 	}
 }
 
@@ -2094,8 +2094,8 @@ async function call_resolver_addr(provider, resolver, node) {
 	const SIG = '3b3b57de'; // addr(bytes32)
 	try {
 		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).addr();
-	} catch (err) {
-		throw wrap_error('Invalid response from resolver for addr', err)
+	} catch (cause) {
+		throw new Error('Invalid response from resolver for addr', {cause});
 	}
 }
 
@@ -2104,7 +2104,7 @@ async function call_resolver_text(provider, resolver, node, key) {
 	try {
 		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node).string(key))).string();
 	} catch (err) {
-		throw wrap_error(`Invalid response from resolver for text: ${key}`, err);
+		throw new Error(`Invalid response from resolver for text: ${key}`, {cause});
 	}
 }
 
@@ -2113,7 +2113,7 @@ async function call_resolver_addr_for_type(provider, resolver, node, type) {
 	try {
 		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node).number(type))).memory();
 	} catch (err) {
-		throw wrap_error(`Invalid response from resolver for addr of type: 0x${type.toString(16).padStart(4, '0')}`, err);
+		throw new Error(`Invalid response from resolver for addr of type: 0x${type.toString(16).padStart(4, '0')}`, {cause});
 	}
 }
 
@@ -2127,12 +2127,6 @@ function call(provider, to, enc) {
 	}
 	if (typeof provider !== 'function') throw new TypeError('unknown provider');
 	return provider({method: 'eth_call', params:[{to, data: enc.build_hex()}, 'latest']});
-}
-
-function wrap_error(s, err) {
-	let wrap = new Error(s);
-	wrap.reason = err;
-	return wrap;
 }
 
 // TODO: this is still a work in progress
