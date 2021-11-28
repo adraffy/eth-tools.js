@@ -27,7 +27,7 @@ console.log(hex_from_bytes([1,2,3,4])); // "01020304" (no 0x-prefix)
 console.log(str_from_bytes([97]));      // "A", throws if invalid utf8
 ```
 
-## [@adraffy/keccak.js](https://github.com/adraffy/ens_normalize.js/)
+## [@adraffy/ens_normalize.js](https://github.com/adraffy/ens_normalize.js/)
 ```Javascript
 import {ens_normalize} from '@adraffy/eth-tools';
 
