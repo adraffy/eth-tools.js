@@ -130,12 +130,15 @@ export async function ens_contenthash_record(provider, input) {
 	let {node, resolver} = ret;
 	if (!is_null_hex(resolver)) {
 		const SIG = 'bc1c58d1'; // contenthash(bytes32)
-		let v = ret.contenthash = ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).memory();
-		// https://github.com/multiformats/multicodec
-		let dec = new ABIDecoder(v);
-		if (dec.uvarint() == 0xE3) { // ipfs
-			if (dec.byte() == 0x01 && dec.byte() == 0x70) { // check version and content-type
-				ret.contenthash_url = `ipfs://${base58_from_bytes(dec.read(dec.remaining))}`;
+		let v =ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).memory();
+		if (v.length > 0) {
+			ret.contenthash = v;
+			// https://github.com/multiformats/multicodec
+			let dec = new ABIDecoder(v);
+			if (dec.uvarint() == 0xE3) { // ipfs
+				if (dec.byte() == 0x01 && dec.byte() == 0x70) { // check version and content-type
+					ret.contenthash_url = `ipfs://${base58_from_bytes(dec.read(dec.remaining))}`;
+				}
 			}
 		}
 	}
@@ -170,7 +173,7 @@ function resolve_addr_type_from_input(x) {
 		} else {
 			name = '0x' + x.toString(16).padStart(4, '0');
 		}
-		return [name, type];
+		return [name, x];
 	} else {
 		throw new TypeError('expected address type or name');
 	}
@@ -183,19 +186,22 @@ async function resolve_name_from_input(provider, input) {
 		input = input.name ?? input.address; // fallback
 	}
 	if (typeof input === 'string') { // name or address
-		let ret;
-		try { 
-			ret = await ens_name_from_address(provider, input); // assume address, will throw if not
-		} catch (ignored) {		
-			ret = {name: ens_normalize(input)}; // assume name, throws
+		input = input.trim();
+		if (input.length > 0) {
+			let ret;
+			try { 
+				ret = await ens_name_from_address(provider, input); // assume address, will throw if not
+			} catch (ignored) {		
+				ret = {name: ens_normalize(input)}; // assume name, throws
+			}
+			let {name} = ret;
+			if (!name) throw new Error(`No name for address`);
+			let node = ens_node_from_name(name);
+			let resolver = await call_registry_resolver(provider, node);
+			return {...ret, node, resolver, [RESOLVED]: resolved_value()};
 		}
-		let {name} = ret;
-		if (!name) throw new Error(`No name for address`);
-		let node = ens_node_from_name(name);
-		let resolver = await call_registry_resolver(provider, node);
-		return {...ret, node, resolver, [RESOLVED]: resolved_value()};
 	}
-	throw new TypeError('expected name, address, or previous object');
+	throw new TypeError('Expected name, address, or previous input');
 }
 
 async function call_registry_resolver(provider, node) {
