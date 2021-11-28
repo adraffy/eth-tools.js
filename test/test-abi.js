@@ -23,6 +23,6 @@ console.log(assert_equal(a, dec.addr()));
 console.log(assert_equal(i, dec.number()));
 console.log(assert_equal(n, dec.big()));
 
-
 console.log(ABIEncoder.method('text(bytes32,string)').number(0).string('avatar').build_hex());
 
+assert_equal(ABIDecoder.from_hex("e301").uvarint(), 227);

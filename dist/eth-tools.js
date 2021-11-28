@@ -426,19 +426,34 @@ function is_valid_address(s) {
 	return /^(0x)?[a-f0-9]{40}$/i.test(s);
 }
 
-function is_null_address(s) {
-	return /^(0x)?[0]{40}$/i.test(s);
+function is_null_hex(s) {
+	return /^(0x)?[0]+$/i.test(s);
 }
 
-/*
-export function method_signature(x) {
-	if (typeof x === 'string') {	
-		return keccak().update(x).hex.slice(0, 8);
-	} else {
-		throw new TypeError('unknown input');
+const BASE_58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'; // removed: "IOl0+/"
+
+// https://tools.ietf.org/id/draft-msporny-base58-01.html
+function base58_from_bytes(v) {
+	let digits = [];
+	let zero = 0;
+	for (let x of v) {
+		if (digits.length == 0 && x == 0) {
+			zero++;
+			continue;
+		}
+		for (let i = 0; i < digits.length; ++i) {
+			let xx = (digits[i] << 8) | x;
+			digits[i] = xx % 58;
+			x = (xx / 58) | 0;
+		}
+		while (x > 0) {
+			digits.push(x % 58);
+			x = (x / 58) | 0;
+		}
 	}
+	for (; zero > 0; zero--) digits.push(0);
+	return String.fromCharCode(...digits.reverse().map(x => BASE_58.charCodeAt(x)));
 }
-*/
 
 function number_from_abi(x) {
 	if (typeof x === 'string') {
@@ -479,9 +494,16 @@ class ABIDecoder {
 		this.pos = end;
 		return v;
 	}
+	byte() {
+		let {pos, buf} = this;
+		if (pos >= buf.length) throw new Error('overflow');
+		this.pos = pos + 1;
+		return buf[pos];
+	}
 	big(n = 32) { return BigInt('0x' + hex_from_bytes(this.read(n))); }
 	number(n = 32) { return number_from_abi(this.read(n)); }
-	string() {
+	string() { return str_from_bytes(this.memory()); }
+	memory() {
 		let pos = this.number();
 		let end = pos + 32;
 		let {buf} = this;
@@ -490,13 +512,27 @@ class ABIDecoder {
 		pos = end;
 		end += len;
 		if (end > buf.length) throw new RangeError('overflow');
-		return decodeURIComponent([...buf.subarray(pos, end)].map(x => `%${x.toString(16).padStart(2, '0')}`).join(''));
+		return buf.subarray(pos, end);
 	}
 	addr(checksum = true) {
 		if (this.number(12) != 0) throw new TypeError('expected zero');
 		let v = this.read(20);
 		let addr = hex_from_bytes(v);
 		return checksum ? checksum_address(addr) : `0x${addr}`; 
+	}
+	//https://github.com/multiformats/unsigned-varint
+	uvarint() { 
+		let acc = 0;
+		let scale = 1;
+		const MASK = 0x7F;
+		while (true) {
+			let next = this.byte();
+			acc += (next & 0x7F) * scale;
+			if (next <= MASK) break;
+			if (scale > 0x400000000000) throw new RangeException('overflow'); // Ceiling[Number.MAX_SAFE_INTEGER/128]
+			scale *= 128;
+		}
+		return acc;
 	}
 }
 
@@ -524,9 +560,9 @@ class ABIEncoder {
 		let N = 4;
 		let enc = new ABIEncoder(N); // method signature doesn't contribute to offset
 		if (method.includes('(')) {
-			enc.bytes(keccak().update(method).bytes.subarray(0, N));
+			enc.add_bytes(keccak().update(method).bytes.subarray(0, N));
 		} else {
-			enc.hex(method);
+			enc.add_hex(method);
 			if (enc.pos != N) throw new Error('method should be a signature or 8-char hex');
 		}
 		return enc;
@@ -576,25 +612,31 @@ class ABIEncoder {
 		let v = bytes_from_hex(i.toString(16));
 		if (v.length > n) v = v.subarray(v.length - n);
 		this.alloc(n).set(v, n - v.length);
-		return this;
+		return this; // chainable
 	}
 	number(i, n = 32) {
 		set_bytes_to_number(this.alloc(n), i);
 		return this; // chainable
 	}
-	string(s) {
-		if (typeof s !== 'string') throw new TypeError('expcted string');
+	string(s) { return this.memory(bytes_from_str(s)); } // chainable
+	memory(v) {
 		let {pos} = this; // remember offset
 		this.alloc(32); // reserve spot
-		let v = bytes_from_str(s);
-		let tail = new Uint8Array((v.length + 63) & ~31); // len + bytes + 0*
+		let tail = new Uint8Array((v.length + 63) & ~31); // len + bytes + 0* [padded]
 		set_bytes_to_number(tail.subarray(0, 32), v.length);
 		tail.set(v, 32);
 		this.tails.push([pos, tail]);
 		return this; // chainable
 	}
-	hex(s) { return this.bytes(bytes_from_hex(s)); } // throws
-	bytes(v) {
+	addr(x) {
+		let v = bytes_from_hex(x); // throws
+		if (v.length != 20) throw new TypeError('expected address');
+		this.alloc(32).set(v, 12);
+		return this; // chainable
+	}
+	// these are dangerous
+	add_hex(s) { return this.add_bytes(bytes_from_hex(s)); } // throws
+	add_bytes(v) {
 		if (!(v instanceof Uint8Array)) {
 			if (v instanceof ArrayBuffer) { 
 				v = new Uint8Array(v);
@@ -607,12 +649,6 @@ class ABIEncoder {
 			}
 		}
 		this.alloc(v.length).set(v);
-		return this; // chainable
-	}
-	addr(x) {
-		let v = bytes_from_hex(x); // throws
-		if (v.length != 20) throw new TypeError('expected address');
-		this.alloc(32).set(v, 12);
 		return this; // chainable
 	}
 }
@@ -970,64 +1006,931 @@ function ens_normalize(name, ignore_disallowed = false) { // https://unicode.org
 	}).join('.');
 }
 
+var ADDR_TYPES = {
+  "777": 833,
+  "3333": 333333,
+  "BTC": 0,
+  "LTC": 2,
+  "DOGE": 3,
+  "RDD": 4,
+  "DASH": 5,
+  "PPC": 6,
+  "NMC": 7,
+  "FTC": 8,
+  "XCP": 9,
+  "BLK": 10,
+  "NSR": 11,
+  "NBT": 12,
+  "MZC": 13,
+  "VIA": 14,
+  "XCH": 8444,
+  "RBY": 16,
+  "GRS": 17,
+  "DGC": 18,
+  "CCN": 828,
+  "DGB": 20,
+  "MONA": 22,
+  "CLAM": 23,
+  "XPM": 24,
+  "NEOS": 25,
+  "JBS": 26,
+  "ZRC": 27,
+  "VTC": 28,
+  "NXT": 29,
+  "BURST": 30,
+  "MUE": 31,
+  "ZOOM": 32,
+  "VASH": 33,
+  "CDN": 34,
+  "SDC": 35,
+  "PKB": 36,
+  "PND": 37,
+  "START": 38,
+  "MOIN": 39,
+  "EXP": 40,
+  "EMC2": 41,
+  "DCR": 42,
+  "XEM": 43,
+  "PART": 44,
+  "ARG": 45,
+  "SHR": 48,
+  "GCR": 49,
+  "NVC": 50,
+  "AC": 51,
+  "BTCD": 52,
+  "DOPE": 53,
+  "TPC": 54,
+  "AIB": 55,
+  "EDRC": 56,
+  "SYS": 57,
+  "SLR": 58,
+  "SMLY": 59,
+  "ETH": 60,
+  "ETC": 61,
+  "PSB": 62,
+  "LDCN": 63,
+  "XBC": 65,
+  "IOP": 66,
+  "NXS": 67,
+  "INSN": 68,
+  "OK": 69,
+  "BRIT": 70,
+  "CMP": 71,
+  "CRW": 72,
+  "BELA": 73,
+  "ICX": 74,
+  "FJC": 75,
+  "MIX": 76,
+  "XVG": 77,
+  "EFL": 78,
+  "CLUB": 79,
+  "RICHX": 80,
+  "POT": 81,
+  "QRK": 82,
+  "TRC": 83,
+  "GRC": 84,
+  "AUR": 85,
+  "IXC": 86,
+  "NLG": 87,
+  "BITB": 88,
+  "BTA": 1657,
+  "XMY": 90,
+  "BSD": 91,
+  "UNO": 92,
+  "MTR": 18000,
+  "GB": 94,
+  "SHM": 95,
+  "CRX": 96,
+  "BIQ": 97,
+  "EVO": 98,
+  "STO": 99,
+  "BIGUP": 100,
+  "GAME": 101,
+  "DLC": 102,
+  "ZYD": 103,
+  "DBIC": 104,
+  "STRAT": 105,
+  "SH": 106,
+  "MARS": 107,
+  "UBQ": 108,
+  "PTC": 109,
+  "NRO": 110,
+  "ARK": 111,
+  "USC": 112,
+  "THC": 113,
+  "LINX": 114,
+  "ECN": 115,
+  "DNR": 116,
+  "PINK": 117,
+  "ATOM": 118,
+  "PIVX": 119,
+  "FLASH": 120,
+  "ZEN": 121,
+  "PUT": 122,
+  "ZNY": 123,
+  "UNIFY": 124,
+  "XST": 125,
+  "BRK": 126,
+  "VC": 127,
+  "XMR": 128,
+  "VOX": 129,
+  "NAV": 130,
+  "FCT": 7777777,
+  "EC": 132,
+  "ZEC": 133,
+  "LSK": 134,
+  "STEEM": 135,
+  "XZC": 136,
+  "RBTC": 137,
+  "RPT": 139,
+  "LBC": 140,
+  "KMD": 141,
+  "BSQ": 142,
+  "RIC": 143,
+  "XRP": 144,
+  "BCH": 145,
+  "NEBL": 146,
+  "ZCL": 147,
+  "XLM": 148,
+  "NLC2": 149,
+  "WHL": 150,
+  "ERC": 151,
+  "DMD": 152,
+  "BTM": 153,
+  "BIO": 154,
+  "XWCC": 155,
+  "BTG": 156,
+  "BTC2X": 157,
+  "SSN": 158,
+  "TOA": 159,
+  "BTX": 160,
+  "ACC": 161,
+  "BCO": 5249353,
+  "ELLA": 163,
+  "PIRL": 164,
+  "NANO": 256,
+  "VIVO": 166,
+  "FRST": 167,
+  "HNC": 168,
+  "BUZZ": 169,
+  "MBRS": 170,
+  "HC": 171,
+  "HTML": 172,
+  "ODN": 173,
+  "ONX": 174,
+  "RVN": 175,
+  "GBX": 176,
+  "BTCZ": 177,
+  "POA": 178,
+  "NYC": 179,
+  "MXT": 180,
+  "WC": 181,
+  "MNX": 182,
+  "BTCP": 183,
+  "MUSIC": 184,
+  "BCA": 185,
+  "CRAVE": 186,
+  "STAK": 187,
+  "WBTC": 188,
+  "LCH": 189,
+  "EXCL": 190,
+  "LCC": 192,
+  "XFE": 193,
+  "EOS": 194,
+  "TRX": 195,
+  "KOBO": 196,
+  "HUSH": 197,
+  "BANANO": 198,
+  "ETF": 199,
+  "OMNI": 200,
+  "BIFI": 201,
+  "UFO": 202,
+  "CNMC": 203,
+  "BCN": 204,
+  "RIN": 205,
+  "ATP": 206,
+  "EVT": 207,
+  "ATN": 208,
+  "BIS": 209,
+  "NEET": 210,
+  "BOPO": 211,
+  "OOT": 212,
+  "ALIAS": 213,
+  "MONK": 842,
+  "BOXY": 215,
+  "FLO": 216,
+  "MEC": 217,
+  "BTDX": 218,
+  "XAX": 219,
+  "ANON": 220,
+  "LTZ": 221,
+  "BITG": 222,
+  "ICP": 223,
+  "SMART": 224,
+  "XUEZ": 225,
+  "HLM": 226,
+  "WEB": 227,
+  "ACM": 228,
+  "NOS": 229,
+  "BITC": 230,
+  "HTH": 231,
+  "TZC": 232,
+  "VAR": 233,
+  "IOV": 234,
+  "FIO": 235,
+  "BSV": 236,
+  "DXN": 237,
+  "QRL": 238,
+  "PCX": 239,
+  "LOKI": 240,
+  "NIM": 242,
+  "SOV": 243,
+  "JCT": 244,
+  "SLP": 245,
+  "EWT": 246,
+  "UC": 401,
+  "EXOS": 248,
+  "ECA": 249,
+  "SOOM": 250,
+  "XRD": 1022,
+  "FREE": 252,
+  "NPW": 253,
+  "BST": 254,
+  "BTCC": 257,
+  "ZEST": 259,
+  "ABT": 260,
+  "PION": 261,
+  "DT3": 262,
+  "ZBUX": 263,
+  "KPL": 264,
+  "TPAY": 265,
+  "ZILLA": 266,
+  "ANK": 267,
+  "BCC": 268,
+  "HPB": 269,
+  "ONE": 1023,
+  "SBC": 271,
+  "IPC": 272,
+  "DMTC": 273,
+  "OGC": 274,
+  "SHIT": 275,
+  "ANDES": 276,
+  "AREPA": 277,
+  "BOLI": 278,
+  "RIL": 279,
+  "HTR": 280,
+  "FCTID": 281,
+  "BRAVO": 282,
+  "ALGO": 283,
+  "BZX": 284,
+  "GXX": 285,
+  "HEAT": 286,
+  "XDN": 287,
+  "FSN": 288,
+  "CPC": 337,
+  "BOLD": 290,
+  "IOST": 291,
+  "TKEY": 292,
+  "USE": 293,
+  "BCZ": 294,
+  "IOC": 295,
+  "ASF": 296,
+  "MASS": 297,
+  "FAIR": 298,
+  "NUKO": 299,
+  "GNX": 300,
+  "DIVI": 301,
+  "CMT": 1122,
+  "EUNO": 303,
+  "IOTX": 304,
+  "ONION": 305,
+  "8BIT": 306,
+  "ATC": 307,
+  "BTS": 308,
+  "CKB": 309,
+  "UGAS": 310,
+  "ADS": 311,
+  "ARA": 312,
+  "ZIL": 313,
+  "MOAC": 314,
+  "SWTC": 315,
+  "VNSC": 316,
+  "PLUG": 317,
+  "MAN": 318,
+  "ECC": 319,
+  "RPD": 320,
+  "RAP": 321,
+  "GARD": 322,
+  "ZER": 323,
+  "EBST": 324,
+  "SHARD": 325,
+  "LINDA": 326,
+  "CMM": 327,
+  "BLOCK": 328,
+  "AUDAX": 329,
+  "LUNA": 330,
+  "ZPM": 331,
+  "KUVA": 332,
+  "MEM": 333,
+  "CS": 498,
+  "SWIFT": 335,
+  "FIX": 336,
+  "VGO": 338,
+  "DVT": 339,
+  "N8V": 340,
+  "MTNS": 341,
+  "BLAST": 342,
+  "DCT": 343,
+  "AUX": 344,
+  "USDP": 345,
+  "HTDF": 346,
+  "YEC": 347,
+  "QLC": 348,
+  "TEA": 349,
+  "ARW": 350,
+  "MDM": 351,
+  "CYB": 352,
+  "LTO": 353,
+  "DOT": 354,
+  "AEON": 355,
+  "RES": 356,
+  "AYA": 357,
+  "DAPS": 358,
+  "CSC": 359,
+  "VSYS": 360,
+  "NOLLAR": 361,
+  "XNOS": 362,
+  "CPU": 363,
+  "LAMB": 364,
+  "VCT": 365,
+  "CZR": 366,
+  "ABBC": 367,
+  "HET": 368,
+  "XAS": 369,
+  "VDL": 370,
+  "MED": 371,
+  "ZVC": 372,
+  "VESTX": 373,
+  "DBT": 374,
+  "SEOS": 375,
+  "MXW": 376,
+  "ZNZ": 377,
+  "XCX": 378,
+  "SOX": 379,
+  "NYZO": 380,
+  "ULC": 381,
+  "RYO": 88888,
+  "KAL": 383,
+  "XSN": 384,
+  "DOGEC": 385,
+  "BMV": 386,
+  "QBC": 387,
+  "IMG": 388,
+  "QOS": 389,
+  "PKT": 390,
+  "LHD": 391,
+  "CENNZ": 392,
+  "HSN": 393,
+  "CRO": 394,
+  "UMBRU": 395,
+  "TON": 607,
+  "NEAR": 397,
+  "XPC": 398,
+  "ZOC": 399,
+  "NIX": 400,
+  "GALI": 402,
+  "OLT": 403,
+  "XBI": 404,
+  "DONU": 405,
+  "EARTHS": 406,
+  "HDD": 407,
+  "SUGAR": 408,
+  "AILE": 409,
+  "TENT": 410,
+  "TAN": 411,
+  "AIN": 412,
+  "MSR": 413,
+  "SUMO": 414,
+  "ETN": 415,
+  "BYTZ": 416,
+  "WOW": 417,
+  "XTNC": 418,
+  "LTHN": 419,
+  "NODE": 420,
+  "AGM": 421,
+  "CCX": 422,
+  "TNET": 423,
+  "TELOS": 424,
+  "AION": 425,
+  "BC": 426,
+  "KTV": 427,
+  "ZCR": 428,
+  "ERG": 429,
+  "PESO": 430,
+  "BTC2": 431,
+  "XRPHD": 432,
+  "WE": 433,
+  "KSM": 434,
+  "PCN": 435,
+  "NCH": 436,
+  "ICU": 437,
+  "LN": 438,
+  "DTP": 439,
+  "BTCR": 1032,
+  "AERGO": 441,
+  "XTH": 442,
+  "LV": 443,
+  "PHR": 444,
+  "VITAE": 445,
+  "COCOS": 446,
+  "DIN": 447,
+  "SPL": 448,
+  "YCE": 449,
+  "XLR": 450,
+  "KTS": 556,
+  "DGLD": 452,
+  "XNS": 453,
+  "EM": 454,
+  "SHN": 455,
+  "SEELE": 456,
+  "AE": 457,
+  "ODX": 458,
+  "KAVA": 459,
+  "GLEEC": 476,
+  "FIL": 461,
+  "RUTA": 462,
+  "CSDT": 463,
+  "ETI": 464,
+  "ZSLP": 465,
+  "ERE": 466,
+  "DX": 467,
+  "CPS": 468,
+  "BTH": 469,
+  "MESG": 470,
+  "FIMK": 471,
+  "AR": 472,
+  "OGO": 473,
+  "ROSE": 474,
+  "BARE": 475,
+  "CLR": 477,
+  "RNG": 478,
+  "OLO": 479,
+  "PEXA": 480,
+  "MOON": 481,
+  "OCEAN": 482,
+  "BNT": 483,
+  "AMO": 484,
+  "FCH": 485,
+  "LAT": 486,
+  "COIN": 487,
+  "VEO": 488,
+  "CCA": 489,
+  "GFN": 490,
+  "BIP": 491,
+  "KPG": 492,
+  "FIN": 493,
+  "BAND": 494,
+  "DROP": 495,
+  "BHT": 496,
+  "LYRA": 497,
+  "RUPX": 499,
+  "THETA": 500,
+  "SOL": 501,
+  "THT": 502,
+  "CFX": 503,
+  "KUMA": 504,
+  "HASH": 505,
+  "CSPR": 506,
+  "EARTH": 507,
+  "ERD": 508,
+  "CHI": 509,
+  "KOTO": 510,
+  "OTC": 511,
+  "SEELEN": 513,
+  "AETH": 514,
+  "DNA": 515,
+  "VEE": 516,
+  "SIERRA": 517,
+  "LET": 518,
+  "BSC": 9006,
+  "BTCV": 520,
+  "ABA": 521,
+  "SCC": 522,
+  "EDG": 523,
+  "AMS": 524,
+  "GOSS": 525,
+  "BU": 526,
+  "GRAM": 527,
+  "YAP": 528,
+  "SCRT": 529,
+  "NOVO": 530,
+  "GHOST": 531,
+  "HST": 532,
+  "PRJ": 533,
+  "YOU": 534,
+  "XHV": 535,
+  "BYND": 536,
+  "JOYS": 537,
+  "VAL": 616,
+  "FLOW": 539,
+  "SMESH": 540,
+  "SCDO": 541,
+  "IQS": 542,
+  "BIND": 543,
+  "COINEVO": 544,
+  "SCRIBE": 545,
+  "HYN": 546,
+  "BHP": 547,
+  "BBC": 1111,
+  "MKF": 549,
+  "XDC": 550,
+  "STR": 551,
+  "SUM": 997,
+  "HBC": 553,
+  "BCS": 555,
+  "LKR": 557,
+  "TAO": 558,
+  "XWC": 559,
+  "DEAL": 560,
+  "NTY": 561,
+  "TOP": 562,
+  "STARS": 563,
+  "AG": 564,
+  "CICO": 565,
+  "IRIS": 566,
+  "NCG": 567,
+  "LRG": 568,
+  "SERO": 569,
+  "BDX": 570,
+  "CCXX": 571,
+  "SLS": 572,
+  "SRM": 573,
+  "VLX": 574,
+  "VIVT": 575,
+  "BPS": 576,
+  "NKN": 577,
+  "ICL": 578,
+  "BONO": 579,
+  "PLC": 580,
+  "DUN": 581,
+  "DMCH": 582,
+  "CTC": 583,
+  "KELP": 584,
+  "GBCR": 585,
+  "XDAG": 586,
+  "PRV": 587,
+  "SCAP": 588,
+  "TFUEL": 589,
+  "GTM": 590,
+  "RNL": 591,
+  "GRIN": 592,
+  "MWC": 593,
+  "DOCK": 594,
+  "POLYX": 595,
+  "DIVER": 596,
+  "XEP": 597,
+  "APN": 598,
+  "TFC": 599,
+  "UTE": 600,
+  "MTC": 601,
+  "NC": 602,
+  "XINY": 603,
+  "DYN": 3381,
+  "BUFS": 605,
+  "STOS": 606,
+  "TAFT": 608,
+  "HYDRA": 609,
+  "NOR": 610,
+  "WCN": 613,
+  "OPT": 614,
+  "PSWAP": 615,
+  "XOR": 617,
+  "SSP": 618,
+  "DEI": 619,
+  "AXL": 620,
+  "ZERO": 621,
+  "NOBL": 624,
+  "EAST": 625,
+  "LORE": 628,
+  "BTSG": 639,
+  "LFC": 640,
+  "AZERO": 643,
+  "XLN": 646,
+  "ZRB": 648,
+  "UCO": 650,
+  "PIRATE": 660,
+  "SFRX": 663,
+  "ACT": 666,
+  "PRKL": 667,
+  "SSC": 668,
+  "GC": 669,
+  "YUNGE": 677,
+  "Voken": 678,
+  "Evrynet": 680,
+  "KAR": 686,
+  "CET": 688,
+  "VEIL": 698,
+  "XDAI": 700,
+  "MCOIN": 707,
+  "CHC": 711,
+  "XTL": 713,
+  "BNB": 714,
+  "SIN": 715,
+  "DLN": 716,
+  "MCX": 725,
+  "BMK": 731,
+  "ATOP": 737,
+  "RAD": 747,
+  "XPRT": 750,
+  "BALLZ": 768,
+  "COSA": 770,
+  "BR": 771,
+  "BTW": 777,
+  "UIDD": 786,
+  "ACA": 787,
+  "BNC": 788,
+  "TAU": 789,
+  "BEET": 800,
+  "DST": 3564,
+  "QVT": 808,
+  "DVPN": 811,
+  "VET": 818,
+  "CLO": 820,
+  "BDB": 822,
+  "CRUZ": 831,
+  "SAPP": 832,
+  "KYAN": 834,
+  "AZR": 835,
+  "CFL": 836,
+  "DASHD": 837,
+  "TRTT": 838,
+  "UCR": 839,
+  "PNY": 840,
+  "BECN": 841,
+  "SAGA": 843,
+  "SUV": 844,
+  "ESK": 845,
+  "OWO": 846,
+  "PEPS": 847,
+  "BIR": 848,
+  "DSM": 852,
+  "PRCY": 853,
+  "MOB": 866,
+  "IF": 868,
+  "LUM": 880,
+  "ZBC": 883,
+  "ADF": 886,
+  "NEO": 888,
+  "TOMO": 889,
+  "XSEL": 890,
+  "LKSC": 896,
+  "XEC": 1899,
+  "LMO": 900,
+  "HNT": 904,
+  "FIS": 907,
+  "SAAGE": 909,
+  "META": 916,
+  "FRA": 917,
+  "DIP": 925,
+  "RUNE": 931,
+  "LTP": 955,
+  "MATIC": 966,
+  "TWINS": 970,
+  "XAZAB": 988,
+  "AIOZ": 989,
+  "PEC": 991,
+  "OKT": 996,
+  "LBTC": 1776,
+  "BCD": 999,
+  "BTN": 1000,
+  "TT": 1001,
+  "BKT": 1002,
+  "NODL": 1003,
+  "FTM": 1007,
+  "HT": 1010,
+  "ELV": 1011,
+  "BIC": 1013,
+  "EVC": 1020,
+  "ONT": 1024,
+  "KEX": 1026,
+  "MCM": 1027,
+  "RISE": 1120,
+  "ETSC": 1128,
+  "DFI": 1129,
+  "CDY": 1145,
+  "HOO": 1170,
+  "ALPH": 1234,
+  "MOVR": 1285,
+  "DFC": 1337,
+  "HYC": 1397,
+  "TENTSLP": 1410,
+  "BEAM": 1533,
+  "ELF": 1616,
+  "AUDL": 1618,
+  "ATH": 1620,
+  "NEW": 1642,
+  "BCX": 1688,
+  "XTZ": 1729,
+  "BBP": 1777,
+  "JPYS": 1784,
+  "VEGA": 1789,
+  "ADA": 1815,
+  "TES": 1856,
+  "CLC": 1901,
+  "VIPS": 1919,
+  "CITY": 1926,
+  "XX": 1955,
+  "XMX": 1977,
+  "TRTL": 1984,
+  "EGEM": 1987,
+  "HODL": 1989,
+  "PHL": 1990,
+  "SC": 1991,
+  "MYT": 1996,
+  "POLIS": 1997,
+  "XMCC": 1998,
+  "COLX": 1999,
+  "GIN": 2000,
+  "MNP": 2001,
+  "KIN": 2017,
+  "EOSC": 2018,
+  "GBT": 2019,
+  "PKC": 2020,
+  "SKT": 2021,
+  "XHT": 2022,
+  "MCASH": 2048,
+  "TRUE": 2049,
+  "IoTE": 2112,
+  "XRG": 2137,
+  "ASK": 2221,
+  "QTUM": 2301,
+  "ETP": 2302,
+  "GXC": 2303,
+  "CRP": 2304,
+  "ELA": 2305,
+  "SNOW": 2338,
+  "AOA": 2570,
+  "REOSC": 2894,
+  "LUX": 3003,
+  "XHB": 3030,
+  "COS": 3077,
+  "SEQ": 3383,
+  "DEO": 3552,
+  "NAS": 2718,
+  "BND": 2941,
+  "CCC": 3276,
+  "ROI": 3377,
+  "FC8": 4040,
+  "YEE": 4096,
+  "IOTA": 4218,
+  "AXE": 4242,
+  "XYM": 4343,
+  "FIC": 5248,
+  "HNS": 5353,
+  "FUND": 5555,
+  "STX": 5757,
+  "VOW": 5895,
+  "SLU": 5920,
+  "GO": 6060,
+  "MOI": 6174,
+  "BPA": 6666,
+  "SAFE": 19165,
+  "ROGER": 6969,
+  "TOPL": 7091,
+  "BTV": 7777,
+  "SKY": 8000,
+  "PAC": 8192,
+  "KLAY": 8217,
+  "BTQ": 8339,
+  "SBTC": 8888,
+  "NULS": 8964,
+  "BTP": 8999,
+  "AVAX": 9000,
+  "ARB": 9001,
+  "BOBA": 9002,
+  "LOOP": 9003,
+  "STARK": 9004,
+  "AVAXC": 9005,
+  "NRG": 9797,
+  "BTF": 9888,
+  "GOD": 9999,
+  "FO": 10000,
+  "RTM": 10226,
+  "XRC": 10291,
+  "XPI": 10605,
+  "ESS": 11111,
+  "IPOS": 12345,
+  "MINA": 12586,
+  "BTY": 13107,
+  "YCC": 13108,
+  "SDGO": 15845,
+  "XTX": 16181,
+  "ARDR": 16754,
+  "FLUX": 19167,
+  "RITO": 19169,
+  "XND": 20036,
+  "PWR": 22504,
+  "BELL": 25252,
+  "CHX": 25718,
+  "ESN": 31102,
+  "TEO": 33416,
+  "BTCS": 33878,
+  "BTT": 34952,
+  "FXTC": 37992,
+  "AMA": 39321,
+  "AXIV": 43028,
+  "EVE": 49262,
+  "STASH": 49344,
+  "CELO": 52752,
+  "KETH": 65536,
+  "GRLC": 69420,
+  "GWL": 70007,
+  "ZYN": 77777,
+  "WICC": 99999,
+  "HOME": 100500,
+  "STC": 101010,
+  "STRAX": 105105,
+  "AKA": 200625,
+  "GENOM": 200665,
+  "ATS": 246529,
+  "PI": 314159,
+  "VALUE": 333332,
+  "X42": 424242,
+  "VITE": 666666,
+  "SEA": 888888,
+  "ILT": 1171337,
+  "ETHO": 1313114,
+  "XERO": 1313500,
+  "LAX": 1712144,
+  "EPK": 3924011,
+  "HYD": 4741444,
+  "BHD": 5249354,
+  "PTN": 5264462,
+  "WAN": 5718350,
+  "WAVES": 5741564,
+  "SEM": 7562605,
+  "ION": 7567736,
+  "WGR": 7825266,
+  "OBSR": 7825267,
+  "AFS": 8163271,
+  "XDS": 15118976,
+  "AQUA": 61717561,
+  "HATCH": 88888888,
+  "kUSD": 91927009,
+  "GENS": 99999996,
+  "EQ": 99999997,
+  "FLUID": 99999998,
+  "QKC": 99999999,
+  "FVDC": 608589380
+};
+
 // https://eips.ethereum.org/EIPS/eip-137#name-syntax
 // warning: this does not normalize
 const ens_node_from_name = namehash;
 
 // https://docs.ens.domains/ens-deployments
 const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e'; // ens registry contract on mainnet
+const RESOLVED = Symbol('ENSResolved');
+
+function resolved_value() {
+	return new Date();
+}
 
 // https://eips.ethereum.org/EIPS/eip-137
 async function ens_address_from_name(provider, name0) {	
 	let name = ens_normalize(name0); // throws
 	let node = ens_node_from_name(name);
-	let resolver = await call_resolver(provider, node);
+	let resolver = await call_registry_resolver(provider, node);
 	let address = false;
-	if (!is_null_address(resolver)) {
+	if (!is_null_hex(resolver)) {
 		address = await call_resolver_addr(provider, resolver, node);
 	}
-	return {name, name0, node, resolver, address};
+	return {name0, name, node, resolver, address, [RESOLVED]: resolved_value()};
 }
 
 // https://eips.ethereum.org/EIPS/eip-181
 async function ens_name_from_address(provider, address) {
 	address = checksum_address(address); // throws
 	let node = ens_node_from_name(`${address.slice(2).toLowerCase()}.addr.reverse`); 
-	let resolver = await call_resolver(provider, node);
-	let name = false;
-	if (!is_null_address(resolver)) {			
+	let resolver = await call_registry_resolver(provider, node);
+	let ret = {node, resolver, address, [RESOLVED]: resolved_value()};
+	if (!is_null_hex(resolver)) {
 		const SIG = '691f3431'; // name(bytes)
-		name = ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(node))).string();
+		ret.name = ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).string();
 	}
-	return {address, node, resolver, name};
+	return ret;
 }
 
 // https://medium.com/the-ethereum-name-service/step-by-step-guide-to-setting-an-nft-as-your-ens-profile-avatar-3562d39567fc
 async function ens_avatar(provider, input) {
-	let name, address = false;
-	try {
-		// if the name is actually an address, reverse it
-		// this will bail immediately if not an address
-		({name, address} = await ens_name_from_address(provider, input)); 
-	} catch (ignored) {		
-		name = ens_normalize(input); // throws
-	}
-	if (name === false) throw new Error(`No name for address`);
-	let node = ens_node_from_name(name);
-	let resolver = await call_resolver(provider, node);
-	if (is_null_address(resolver)) {
-		return {type: 'none', name};
-	}
-	if (!address) {
-		address = await call_resolver_addr(provider, resolver, node);
-	}
+	let ret = await resolve_name_from_input(provider, input);
+	let {node, resolver, address} = ret;
+	if (is_null_hex(resolver)) return {type: 'none', ...ret};
+	if (!address) ret.address = address = await call_resolver_addr(provider, resolver, node);
 	let avatar = await call_resolver_text(provider, resolver, node, 'avatar');
-	if (avatar.length == 0) { 
-		return {type: 'null', name, address};
-	}
-	if (avatar.includes('://') || avatar.startsWith('data:')) {
-		return {type: 'url', name, address, avatar};
-	}
+	if (avatar.length == 0) return {type: 'null', ...ret}; 
+	ret.avatar = avatar;
+	if (avatar.includes('://') || avatar.startsWith('data:')) return {type: 'url', ...ret};
 	// parse inline format
 	let parts = avatar.split('/');
 	let part0 = parts[0];
@@ -1049,7 +1952,7 @@ async function ens_avatar(provider, input) {
 			]);
 			owner = ABIDecoder.from_hex(owner).addr();
 			meta_uri = ABIDecoder.from_hex(meta_uri).string();
-			return {type: 'erc721', name, address, avatar, contract: contract, token, meta_uri, is_owner: address === owner};
+			return {type: 'erc721', ...ret, contract, token, meta_uri, is_owner: address === owner};
 		} else if (part1.startsWith('erc1155:')) {
 			if (parts.length < 3) throw new Error('Invalid avatar format: expected token');
 			let contract = part1.slice(part1.indexOf(':') + 1);
@@ -1058,21 +1961,124 @@ async function ens_avatar(provider, input) {
 			const SIG_tokenURI  = '0e89341c'; // uri(uint256)
 			const SIG_balanceOf = '00fdd58e'; // balanceOf(address,uint256)
 			let [balance, meta_uri] = await Promise.all([
-				call(provider, contract, ABIEncoder.method(SIG_balanceOf).addr(address).hex(hex_token)),
-				call(provider, contract, ABIEncoder.method(SIG_tokenURI).hex(hex_token))
+				call(provider, contract, ABIEncoder.method(SIG_balanceOf).addr(address).add_hex(hex_token)),
+				call(provider, contract, ABIEncoder.method(SIG_tokenURI).add_hex(hex_token))
 			]);
 			balance = ABIDecoder.from_hex(balance).number();
 			meta_uri = ABIDecoder.from_hex(meta_uri).string().replace(/{id}/, hex_token); // 1155 standard
-			return {type: 'erc1155', name, address, avatar, contract: contract, token, meta_uri, is_owner: balance > 0};
+			return {type: 'erc1155', ...ret, contract, token, meta_uri, is_owner: balance > 0};
 		} 			
 	}
-	return {type: 'unknown', name, address, avatar};	
+	return {type: 'unknown', ...ret};	
 }
 
-async function call_resolver(provider, node) {
+// https://eips.ethereum.org/EIPS/eip-634
+// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/TextResolver.sol
+async function ens_text_record(provider, input, keys) {
+	if (typeof keys === 'string') keys = [keys];
+	if (!Array.isArray(keys)) throw new TypeError('expected key or array of keys');
+	let ret = await resolve_name_from_input(provider, input);
+	let {node, resolver} = ret;
+	if (!is_null_hex(resolver)) {
+		let values = await Promise.all(keys.map(x => call_resolver_text(provider, resolver, node, x)));
+		ret.text = Object.fromEntries(keys.map((k, i) => [k, values[i]]));
+	}
+	return ret;
+}
+
+// https://eips.ethereum.org/EIPS/eip-2304
+// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/AddrResolver.sol
+async function ens_addr_record(provider, input, addresses) {
+	if (!Array.isArray(addresses)) addresses = [addresses];
+	addresses = addresses.map(resolve_addr_type_from_input); // throws
+	let ret = await resolve_name_from_input(provider, input);
+	let {node, resolver} = ret;
+	if (!is_null_hex(resolver)) {
+		let values = await Promise.all(addresses.map(([_, type]) => call_resolver_addr_for_type(provider, resolver, node, type)));
+		ret.addr = Object.fromEntries(addresses.map(([name, _], i) => [name, values[i]]));
+	}
+	return ret;
+}
+
+// https://eips.ethereum.org/EIPS/eip-1577
+// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/ContentHashResolver.sol
+async function ens_contenthash_record(provider, input) {
+	let ret = await resolve_name_from_input(provider, input);
+	let {node, resolver} = ret;
+	if (!is_null_hex(resolver)) {
+		const SIG = 'bc1c58d1'; // contenthash(bytes32)
+		let v = ret.contenthash = ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).memory();
+		// https://github.com/multiformats/multicodec
+		let dec = new ABIDecoder(v);
+		if (dec.uvarint() == 0xE3) { // ipfs
+			if (dec.byte() == 0x01 && dec.byte() == 0x70) { // check version and content-type
+				ret.contenthash_url = `ipfs://${base58_from_bytes(dec.read(dec.remaining))}`;
+			}
+		}
+	}
+	return ret;
+}
+
+// https://github.com/ethereum/EIPs/pull/619
+// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/PubkeyResolver.sol
+async function ens_pubkey_record(provider, input) {
+	let ret = await resolve_name_from_input(provider, input);
+	let {node, resolver} = ret;
+	if (!is_null_hex(resolver)) {
+		const SIG = 'c8690233'; // pubkey(bytes32)
+		let dec = ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node)));
+		ret.pubkey = {x: dec.read(32), y: dec.read(32)};
+	}
+	return ret;
+}
+
+// see: test/build-address-types.js
+// https://github.com/satoshilabs/slips/blob/master/slip-0044.md
+function resolve_addr_type_from_input(x) {
+	if (typeof x === 'string') {
+		let type = ADDR_TYPES[x];
+		if (typeof type !== 'number') throw new Error(`unknown address type for name: ${x}`);
+		return [x, type];
+	} else if (typeof x === 'number') {		
+		let pos = Object.values(ADDR_TYPES).indexOf(x);
+		let name;
+		if (pos >= 0) {
+			name = Object.keys(ADDR_TYPES)[pos];
+		} else {
+			name = '0x' + x.toString(16).padStart(4, '0');
+		}
+		return [name, type];
+	} else {
+		throw new TypeError('expected address type or name');
+	}
+}
+
+// turn a name/address/object into {name, node, resolver}
+async function resolve_name_from_input(provider, input) {
+	if (typeof input === 'object') { // previously resolved object? 
+		if (RESOLVED in input) return input; // trusted
+		input = input.name ?? input.address; // fallback
+	}
+	if (typeof input === 'string') { // name or address
+		let ret;
+		try { 
+			ret = await ens_name_from_address(provider, input); // assume address, will throw if not
+		} catch (ignored) {		
+			ret = {name: ens_normalize(input)}; // assume name, throws
+		}
+		let {name} = ret;
+		if (!name) throw new Error(`No name for address`);
+		let node = ens_node_from_name(name);
+		let resolver = await call_registry_resolver(provider, node);
+		return {...ret, node, resolver, [RESOLVED]: resolved_value()};
+	}
+	throw new TypeError('expected name, address, or previous object');
+}
+
+async function call_registry_resolver(provider, node) {
 	const SIG = '0178b8bf'; // resolver(bytes32)
 	try {
-		return ABIDecoder.from_hex(await call(provider, ENS_REGISTRY, ABIEncoder.method(SIG).hex(node))).addr();
+		return ABIDecoder.from_hex(await call(provider, ENS_REGISTRY, ABIEncoder.method(SIG).add_hex(node))).addr();
 	} catch (err) {
 		throw wrap_error('Invalid response from registry', err);
 	}
@@ -1081,18 +2087,27 @@ async function call_resolver(provider, node) {
 async function call_resolver_addr(provider, resolver, node) {
 	const SIG = '3b3b57de'; // addr(bytes32)
 	try {
-		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(node))).addr();
+		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).addr();
 	} catch (err) {
-		throw wrap_error('Invalid response from resolver for addr()', err)
+		throw wrap_error('Invalid response from resolver for addr', err)
 	}
 }
 
 async function call_resolver_text(provider, resolver, node, key) {
 	const SIG = '59d1d43c'; // text(bytes32,string)
 	try {
-		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(node).string(key))).string();
+		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node).string(key))).string();
 	} catch (err) {
-		throw wrap_error(`Invalid response from resolver for text(${key})`, err);
+		throw wrap_error(`Invalid response from resolver for text: ${key}`, err);
+	}
+}
+
+async function call_resolver_addr_for_type(provider, resolver, node, type) {
+	const SIG = 'f1cb7e06'; // addr(bytes32,uint256);
+	try {
+		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node).number(type))).memory();
+	} catch (err) {
+		throw wrap_error(`Invalid response from resolver for addr of type: 0x${type.toString(16).padStart(4, '0')}`, err);
 	}
 }
 
@@ -1100,7 +2115,7 @@ function call(provider, to, enc) {
 	if (typeof provider === 'object') {
 		if (provider.request) {
 			provider = provider.request.bind(provider); 
-		} else if (provider.sendAsync) {
+		} else if (provider.sendAsync) { // support boomer tech
 			provider = provider.sendAsync.bind(provider);
 		} // what else?
 	}
@@ -1225,4 +2240,4 @@ class FetchProvider {
 	}
 }
 
-export { ABIDecoder, ABIEncoder, FetchProvider, bytes_from_hex, bytes_from_str, checksum_address, ens_address_from_name, ens_avatar, ens_name_from_address, ens_node_from_name, ens_normalize, get_mapped, hex_from_bytes, idna, is_combining_mark, is_disallowed, is_ignored, is_null_address, is_valid_address, keccak, namehash, number_from_abi, sha3, shake, smol_provider, str_from_bytes };
+export { ABIDecoder, ABIEncoder, ADDR_TYPES, FetchProvider, base58_from_bytes, bytes_from_hex, bytes_from_str, checksum_address, ens_addr_record, ens_address_from_name, ens_avatar, ens_contenthash_record, ens_name_from_address, ens_node_from_name, ens_normalize, ens_pubkey_record, ens_text_record, get_mapped, hex_from_bytes, idna, is_combining_mark, is_disallowed, is_ignored, is_null_hex, is_valid_address, keccak, namehash, number_from_abi, sha3, shake, smol_provider, str_from_bytes };

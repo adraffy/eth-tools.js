@@ -1,4 +1,4 @@
-import {bytes_from_str, bytes_from_hex, hex_from_bytes, keccak} from '@adraffy/keccak';
+import {bytes_from_str, bytes_from_hex, hex_from_bytes, keccak, str_from_bytes} from '@adraffy/keccak';
 import {checksum_address} from './utils.js';
 
 export function number_from_abi(x) {
@@ -40,9 +40,16 @@ export class ABIDecoder {
 		this.pos = end;
 		return v;
 	}
+	byte() {
+		let {pos, buf} = this;
+		if (pos >= buf.length) throw new Error('overflow');
+		this.pos = pos + 1;
+		return buf[pos];
+	}
 	big(n = 32) { return BigInt('0x' + hex_from_bytes(this.read(n))); }
 	number(n = 32) { return number_from_abi(this.read(n)); }
-	string() {
+	string() { return str_from_bytes(this.memory()); }
+	memory() {
 		let pos = this.number();
 		let end = pos + 32;
 		let {buf} = this;
@@ -51,13 +58,27 @@ export class ABIDecoder {
 		pos = end;
 		end += len;
 		if (end > buf.length) throw new RangeError('overflow');
-		return decodeURIComponent([...buf.subarray(pos, end)].map(x => `%${x.toString(16).padStart(2, '0')}`).join(''));
+		return buf.subarray(pos, end);
 	}
 	addr(checksum = true) {
 		if (this.number(12) != 0) throw new TypeError('expected zero');
 		let v = this.read(20);
 		let addr = hex_from_bytes(v);
 		return checksum ? checksum_address(addr) : `0x${addr}`; 
+	}
+	//https://github.com/multiformats/unsigned-varint
+	uvarint() { 
+		let acc = 0;
+		let scale = 1;
+		const MASK = 0x7F;
+		while (true) {
+			let next = this.byte();
+			acc += (next & 0x7F) * scale;
+			if (next <= MASK) break;
+			if (scale > 0x400000000000) throw new RangeException('overflow'); // Ceiling[Number.MAX_SAFE_INTEGER/128]
+			scale *= 128;
+		}
+		return acc;
 	}
 }
 
@@ -85,9 +106,9 @@ export class ABIEncoder {
 		let N = 4;
 		let enc = new ABIEncoder(N); // method signature doesn't contribute to offset
 		if (method.includes('(')) {
-			enc.bytes(keccak().update(method).bytes.subarray(0, N));
+			enc.add_bytes(keccak().update(method).bytes.subarray(0, N));
 		} else {
-			enc.hex(method);
+			enc.add_hex(method);
 			if (enc.pos != N) throw new Error('method should be a signature or 8-char hex');
 		}
 		return enc;
@@ -137,25 +158,31 @@ export class ABIEncoder {
 		let v = bytes_from_hex(i.toString(16));
 		if (v.length > n) v = v.subarray(v.length - n);
 		this.alloc(n).set(v, n - v.length);
-		return this;
+		return this; // chainable
 	}
 	number(i, n = 32) {
 		set_bytes_to_number(this.alloc(n), i);
 		return this; // chainable
 	}
-	string(s) {
-		if (typeof s !== 'string') throw new TypeError('expcted string');
+	string(s) { return this.memory(bytes_from_str(s)); } // chainable
+	memory(v) {
 		let {pos} = this; // remember offset
 		this.alloc(32); // reserve spot
-		let v = bytes_from_str(s);
-		let tail = new Uint8Array((v.length + 63) & ~31); // len + bytes + 0*
+		let tail = new Uint8Array((v.length + 63) & ~31); // len + bytes + 0* [padded]
 		set_bytes_to_number(tail.subarray(0, 32), v.length);
 		tail.set(v, 32);
 		this.tails.push([pos, tail]);
 		return this; // chainable
 	}
-	hex(s) { return this.bytes(bytes_from_hex(s)); } // throws
-	bytes(v) {
+	addr(x) {
+		let v = bytes_from_hex(x); // throws
+		if (v.length != 20) throw new TypeError('expected address');
+		this.alloc(32).set(v, 12);
+		return this; // chainable
+	}
+	// these are dangerous
+	add_hex(s) { return this.add_bytes(bytes_from_hex(s)); } // throws
+	add_bytes(v) {
 		if (!(v instanceof Uint8Array)) {
 			if (v instanceof ArrayBuffer) { 
 				v = new Uint8Array(v);
@@ -168,12 +195,6 @@ export class ABIEncoder {
 			}
 		}
 		this.alloc(v.length).set(v);
-		return this; // chainable
-	}
-	addr(x) {
-		let v = bytes_from_hex(x); // throws
-		if (v.length != 20) throw new TypeError('expected address');
-		this.alloc(32).set(v, 12);
 		return this; // chainable
 	}
 }
