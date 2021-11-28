@@ -1,5 +1,5 @@
 # eth-tools.js
-Compact set of ES6 tools for Ethereum dapps that works in the browser.
+Compact set of ES6 tools for Ethereum dapps that work in the browser.
 
 * `dist/eth-tools.js` contains everything.
 * `dist/eth-abi.js` contains everything except ENS support.
