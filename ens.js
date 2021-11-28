@@ -1,24 +1,13 @@
 import {hex_from_bytes, keccak} from '@adraffy/keccak';
 import {ens_normalize} from '@adraffy/ens-normalize';
 import {ABIDecoder, ABIEncoder} from './abi.js';
-import {checksum_address, is_null_address} from './utils.js';
+import {namehash, checksum_address, is_null_address} from './utils.js';
 
 export {ens_normalize};
 
-// expects a string
-// returns 64-char hex-string, no 0x-prefix
 // https://eips.ethereum.org/EIPS/eip-137#name-syntax
-export function ens_namehash(name) {
-	if (typeof name !== 'string') throw new TypeError('Expected string');
-	let buf = new Uint8Array(64); 
-	if (name.length > 0) {
-		for (let label of name.split('.').reverse()) {
-			buf.set(keccak().update(label).bytes, 32);
-			buf.set(keccak().update(buf).bytes, 0);
-		}
-	}
-	return hex_from_bytes(buf.subarray(0, 32));
-}
+// warning: this does not normalize
+export const ens_node_from_name = namehash;
 
 // https://docs.ens.domains/ens-deployments
 const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e'; // ens registry contract on mainnet
@@ -26,26 +15,26 @@ const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e'; // ens regist
 // https://eips.ethereum.org/EIPS/eip-137
 export async function ens_address_from_name(provider, name0) {	
 	let name = ens_normalize(name0); // throws
-	let namehash = ens_namehash(name);
-	let resolver = await call_resolver(provider, namehash);
+	let node = ens_node_from_name(name);
+	let resolver = await call_resolver(provider, node);
 	let address = false;
 	if (!is_null_address(resolver)) {
-		address = await call_resolver_addr(provider, resolver, namehash);
+		address = await call_resolver_addr(provider, resolver, node);
 	}
-	return {name, name0, namehash, resolver, address};
+	return {name, name0, node, resolver, address};
 }
 
 // https://eips.ethereum.org/EIPS/eip-181
 export async function ens_name_from_address(provider, address) {
 	address = checksum_address(address); // throws
-	let namehash = ens_namehash(`${address.slice(2).toLowerCase()}.addr.reverse`); 
-	let resolver = await call_resolver(provider, namehash);
+	let node = ens_node_from_name(`${address.slice(2).toLowerCase()}.addr.reverse`); 
+	let resolver = await call_resolver(provider, node);
 	let name = false;
 	if (!is_null_address(resolver)) {			
 		const SIG = '691f3431'; // name(bytes)
-		name = ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(namehash))).string();
+		name = ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(node))).string();
 	}
-	return {address, namehash, resolver, name};
+	return {address, node, resolver, name};
 }
 
 // https://medium.com/the-ethereum-name-service/step-by-step-guide-to-setting-an-nft-as-your-ens-profile-avatar-3562d39567fc
@@ -59,15 +48,15 @@ export async function ens_avatar(provider, input) {
 		name = ens_normalize(input); // throws
 	}
 	if (name === false) throw new Error(`No name for address`);
-	let namehash = ens_namehash(name);
-	let resolver = await call_resolver(provider, namehash);
+	let node = ens_node_from_name(name);
+	let resolver = await call_resolver(provider, node);
 	if (is_null_address(resolver)) {
 		return {type: 'none', name};
 	}
 	if (!address) {
-		address = await call_resolver_addr(provider, resolver, namehash);
+		address = await call_resolver_addr(provider, resolver, node);
 	}
-	let avatar = await call_resolver_text(provider, resolver, namehash, 'avatar');
+	let avatar = await call_resolver_text(provider, resolver, node, 'avatar');
 	if (avatar.length == 0) { 
 		return {type: 'null', name, address};
 	}
@@ -115,28 +104,28 @@ export async function ens_avatar(provider, input) {
 	return {type: 'unknown', name, address, avatar};	
 }
 
-async function call_resolver(provider, namehash) {
+async function call_resolver(provider, node) {
 	const SIG = '0178b8bf'; // resolver(bytes32)
 	try {
-		return ABIDecoder.from_hex(await call(provider, ENS_REGISTRY, ABIEncoder.method(SIG).hex(namehash))).addr();
+		return ABIDecoder.from_hex(await call(provider, ENS_REGISTRY, ABIEncoder.method(SIG).hex(node))).addr();
 	} catch (err) {
 		throw wrap_error('Invalid response from registry', err);
 	}
 }
 
-async function call_resolver_addr(provider, resolver, namehash) {
+async function call_resolver_addr(provider, resolver, node) {
 	const SIG = '3b3b57de'; // addr(bytes32)
 	try {
-		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(namehash))).addr();
+		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(node))).addr();
 	} catch (err) {
 		throw wrap_error('Invalid response from resolver for addr()', err)
 	}
 }
 
-async function call_resolver_text(provider, resolver, namehash, key) {
+async function call_resolver_text(provider, resolver, node, key) {
 	const SIG = '59d1d43c'; // text(bytes32,string)
 	try {
-		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(namehash).string(key))).string();
+		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(node).string(key))).string();
 	} catch (err) {
 		throw wrap_error(`Invalid response from resolver for text(${key})`, err);
 	}

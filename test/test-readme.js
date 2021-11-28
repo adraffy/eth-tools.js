@@ -46,18 +46,22 @@ console.log(dec.addr());   // read 40-char hex-string (0x-prefixed w/checksum)
 import {ens_address_from_name, ens_name_from_address, ens_avatar} from '../eth-tools.js';
 import provider from './cloudflare.js'; 
 
-// resolve a name
-console.log(await ens_address_from_name(provider, 'nIcK.eth')); // throws if error
-// returns {name, name0, namehash, resolver, address}
-
-// reverse an address to a name
-console.log(await ens_name_from_address(provider, '0xb8c2C29ee19D8307cb7255e1Cd9CbDE883A267d5')); // throws if error, 0x-prefix is optional
-// returns {address, namehash, resolver, name}
-
-// lookup an avatar by name or address
-console.log(await ens_avatar(provider, 'niCk.eTh')); // throws if error
-// returns {type, name, address, avatar, contract, token, meta_uri, is_owner}
-// type can be: ['null, 'url', 'erc1155', 'erc721', 'unknown']
+ // normalize a name
+ console.log(ens_normalize('niCK.eth')); 
+ // returns "nick.eth"
+ 
+ // resolve an unnormalized name
+ console.log(await ens_address_from_name(provider, 'nIcK.eth')); // throws if error
+ // returns {name, name0, namehash, resolver, address}
+ 
+ // reverse an address to a name
+ console.log(await ens_name_from_address(provider, '0xb8c2C29ee19D8307cb7255e1Cd9CbDE883A267d5')); // throws if error, 0x-prefix is optional
+ // returns {address, namehash, resolver, name}
+ 
+ // lookup an avatar by unnormalized name or address
+ console.log(await ens_avatar(provider, 'niCk.eTh')); // throws if error
+ // returns {type, name, address, avatar, contract, token, meta_uri, is_owner}
+ // type can be: ['null, 'url', 'erc1155', 'erc721', 'unknown']
 
 //
 

@@ -1,8 +1,8 @@
 # eth-tools.js
-Small set of tools for Ethereum combined into 1-file for the browser.
+Compact set of ES6 tools for Ethereum dapps that works in the browser.
 
-* `dist/eth-tools.js` contains everything
-* `dist/eth-abi.js` contains everything except `@adraffy/ens-normalize` and `ens.js`
+* `dist/eth-tools.js` contains everything.
+* `dist/eth-abi.js` contains everything except ENS support.
 
 ```Javascript
 import * as tools from '@adraffy/eth-tools';
@@ -61,21 +61,24 @@ console.log(dec.addr());   // read 40-char hex-string (0x-prefixed w/checksum)
 
 ### ens.js
 ```Javascript
-import {ens_normalize, ens_address_from_name, ens_name_from_address, ens_avatar} from '@adraffy/eth-tools';
+import {ens_normalize, ens_node_from_name, ens_address_from_name, ens_name_from_address, ens_avatar} from '@adraffy/eth-tools';
 
-let provider = window.ethereum; 
-// or some other async provider (see below)
+let provider = window.ethereum; // or some other async provider (see below)
 
  // normalize a name
-console.log(ens_normalize('niCK.eth'));
+console.log(ens_normalize('niCK.eth')); 
+// returns "nick.eth"
+
+// get hash of a name (called a node)
+console.log(ens_node_from_name('nick.eth')); // returns 64-char hex, no 0x-prefix, does not normalize!
 
 // resolve an unnormalized name
 console.log(await ens_address_from_name(provider, 'nIcK.eth')); // throws if error
-// returns {name, name0, namehash, resolver, address}
+// returns {name, name0, node, resolver, address}
 
 // reverse an address to a name
 console.log(await ens_name_from_address(provider, '0xb8c2C29ee19D8307cb7255e1Cd9CbDE883A267d5')); // throws if error, 0x-prefix is optional
-// returns {address, namehash, resolver, name}
+// returns {address, node, resolver, name}
 
 // lookup an avatar by unnormalized name or address
 console.log(await ens_avatar(provider, 'niCk.eTh')); // throws if error
@@ -85,7 +88,7 @@ console.log(await ens_avatar(provider, 'niCk.eTh')); // throws if error
 
 ### utils.js
 ```Javascript
-import {checksum_address} from '@adraffy/eth-tools';
+import {checksum_address, namehash} from '@adraffy/eth-tools';
 
 console.log(checksum_address('b8c2c29ee19d8307cb7255e1cd9cbde883a267d5')); 
 // returns "0xb8c2C29ee19D8307cb7255e1Cd9CbDE883A267d5"
