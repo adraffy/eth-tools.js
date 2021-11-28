@@ -48,13 +48,13 @@ import {ABIDecoder} from '@adraffy/eth-tools';
 let dec = ABIDecoder.from_hex(enc.build_hex());
 dec.read(4); // skip signature
 console.log(dec.string()); // read memory, return utf string
-console.log(dec.member()); // read memory, return Uint8Array
+console.log(dec.memory()); // read memory, return Uint8Array
 console.log(dec.number()); // read u256 as number, throws if too big
 console.log(dec.big());    // read u256 as BigInt
 console.log(dec.addr());   // read 40-char hex-string (0x-prefixed w/checksum)
 ```
 
-## [@adraffy/ens_normalize.js](https://github.com/adraffy/ens_normalize.js/)
+## [@adraffy/ens-normalize.js](https://github.com/adraffy/ens-normalize.js/)
 ```Javascript
 import {ens_normalize} from '@adraffy/eth-tools';
 

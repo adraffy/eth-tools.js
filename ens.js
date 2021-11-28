@@ -201,7 +201,7 @@ async function resolve_name_from_input(provider, input) {
 			return {...ret, node, resolver, [RESOLVED]: resolved_value()};
 		}
 	}
-	throw new TypeError('Expected name, address, or previous input');
+	throw new TypeError('Expected name or address');
 }
 
 async function call_registry_resolver(provider, node) {
