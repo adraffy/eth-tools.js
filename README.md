@@ -33,6 +33,7 @@ import {ABIEncoder} from '@adraffy/eth-tools';
 
 let enc = ABIEncoder.method('func(string,bytes32'); // or hashed signature
 enc.string('hello');
+enc.memory(Uint8Array.of(1,2,3));
 enc.number(1234);
 enc.big(1152921504606846976n);
 enc.addr('0x4976fb03C32e5B8cfe2b6cCB31c09Ba78EBaBa41');
@@ -46,7 +47,8 @@ import {ABIDecoder} from '@adraffy/eth-tools';
 
 let dec = ABIDecoder.from_hex(enc.build_hex());
 dec.read(4); // skip signature
-console.log(dec.string()); // read a string
+console.log(dec.string()); // read memory, return utf string
+console.log(dec.member()); // read memory, return Uint8Array
 console.log(dec.number()); // read u256 as number, throws if too big
 console.log(dec.big());    // read u256 as BigInt
 console.log(dec.addr());   // read 40-char hex-string (0x-prefixed w/checksum)
@@ -61,7 +63,7 @@ let normalized = ens_normalize('🚴‍♂️.eth'); // throws if error
 
 ### ens.js
 ```Javascript
-import {ens_node_from_name, ens_address_from_name, ens_name_from_address, ens_avatar} from '@adraffy/eth-tools';
+import {ens_node_from_name, ens_address_from_name, ens_name_from_address} from '@adraffy/eth-tools';
 
 let provider = window.ethereum; // or some other async provider (see below)
 
@@ -76,10 +78,32 @@ console.log(await ens_address_from_name(provider, 'nIcK.eth')); // throws if err
 console.log(await ens_name_from_address(provider, '0xb8c2C29ee19D8307cb7255e1Cd9CbDE883A267d5')); // throws if error, 0x-prefix is optional
 // returns {address, node, resolver, name}
 
-// lookup an avatar by unnormalized name or address
-console.log(await ens_avatar(provider, 'niCk.eTh')); // throws if error
+import {ens_avatar, ens_text_record, ens_addr_record} from '@adraffy/eth-tools';
+
+// get avatar by unnormalized name or address or previous lookup
+// also looks up contract, checks ownership, etc. 
+let avatar = await ens_avatar(provider, 'niCk.eTh'); // throws if error
+console.log(avatar); 
 // returns {type, name, address, avatar, contract, token, meta_uri, is_owner}
 // type can be: ['null, 'url', 'erc1155', 'erc721', 'unknown']
+
+// get text records 
+console.log(await ens_text_record(provider, avatar, ['email', 'com.twitter']));
+// returns {..., text: {email: "a@b.com", ...}}
+
+// get addr records (you can use coin names)
+console.log(await ens_addr_record(provider, avatar, ['BTC', 'XLM']));
+// returns {..., addr: {"BTC: Uint8Array(), ... }}
+
+import {ens_contenthash_record, ens_pubkey_record} from '@adraffy/eth-tools';
+
+// get content hash
+console.log(await ens_contenthash_record(provider, avatar));
+// returns {..., contenthash: Uint8Array(), contenthash_url: 'ipfs://...'}
+
+// get pubkey
+console.log(await ens_pubkey_record(provider, avatar));
+// returns {..., pubkey: {x: Uint8Array(32), y: Uint8Array(32)}}
 ```
 
 ### utils.js
