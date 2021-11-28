@@ -1,6 +1,6 @@
 {
   "name": "@adraffy/eth-tools",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Compact set of ES6 tools for Ethereum dapps that work in the browser",
   "keywords": [
     "ethereum",
@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@adraffy/ens-normalize": "^1.0.7",
-    "@adraffy/keccak": "^1.1.4"
+    "@adraffy/keccak": "^1.1.5"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "^13.0.6"

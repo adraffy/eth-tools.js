@@ -83,13 +83,13 @@ export async function ens_avatar(provider, input) {
 				call(provider, contract, ABIEncoder.method(SIG_tokenURI).big(token_big))
 			]);
 			owner = ABIDecoder.from_hex(owner).addr();
-			meta_uri = ABIDecoder.from_hex(meta).string();
+			meta_uri = ABIDecoder.from_hex(meta_uri).string();
 			return {type: 'erc721', name, address, avatar, contract: contract, token, meta_uri, is_owner: address === owner};
 		} else if (part1.startsWith('erc1155:')) {
 			if (parts.length < 3) throw new Error('Invalid avatar format: expected token');
 			let contract = part1.slice(part1.indexOf(':') + 1);
 			let token = parts[2];
-			let hex_token = '0x' + BigInt(token).toString(16).padStart(64, '0');
+			let hex_token = BigInt(token).toString(16).padStart(64, '0'); // no 0x
 			const SIG_tokenURI  = '0e89341c'; // uri(uint256)
 			const SIG_balanceOf = '00fdd58e'; // balanceOf(address,uint256)
 			let [balance, meta_uri] = await Promise.all([

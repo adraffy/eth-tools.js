@@ -16,16 +16,14 @@ function bytes_from_str(s) {
 	return v;
 }
 
-// returns Uint8Array from hex
-// 0x- is optional
-// accepts hex-string of even length
+// accepts hex-string, 0x-prefix is optional
+// returns Uint8Array
 function bytes_from_hex(s) {
 	if (typeof s !== 'string') throw TypeError('expected string');
-	let {length} = s;
-	if (length & 1) throw new TypeError('expected string of hex bytes');
 	let pos = 0;
-	if (s.startsWith('0x')) pos += 2;
-	let len = (length - pos) >> 1;
+	if (s.startsWith('0x')) pos += 2; // skip prefix
+	if (s.length & 1) s = `0${s}`; // zero-pad odd length
+	let len = (s.length - pos) >> 1;
 	let v = new Uint8Array(len);
 	for (let i = 0; i < len; i++) {
 		let b = parseInt(s.slice(pos, pos += 2), 16);
@@ -36,7 +34,7 @@ function bytes_from_hex(s) {
 }
 
 // returns hex from Uint8Array
-// no 0x-
+// no 0x-prefix
 function hex_from_bytes(v) {
 	return [...v].map(x => x.toString(16).padStart(2, '0')).join('');
 }

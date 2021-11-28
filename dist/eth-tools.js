@@ -18,16 +18,14 @@ function bytes_from_str(s) {
 	return v;
 }
 
-// returns Uint8Array from hex
-// 0x- is optional
-// accepts hex-string of even length
+// accepts hex-string, 0x-prefix is optional
+// returns Uint8Array
 function bytes_from_hex(s) {
 	if (typeof s !== 'string') throw TypeError('expected string');
-	let {length} = s;
-	if (length & 1) throw new TypeError('expected string of hex bytes');
 	let pos = 0;
-	if (s.startsWith('0x')) pos += 2;
-	let len = (length - pos) >> 1;
+	if (s.startsWith('0x')) pos += 2; // skip prefix
+	if (s.length & 1) s = `0${s}`; // zero-pad odd length
+	let len = (s.length - pos) >> 1;
 	let v = new Uint8Array(len);
 	for (let i = 0; i < len; i++) {
 		let b = parseInt(s.slice(pos, pos += 2), 16);
@@ -38,7 +36,7 @@ function bytes_from_hex(s) {
 }
 
 // returns hex from Uint8Array
-// no 0x-
+// no 0x-prefix
 function hex_from_bytes(v) {
 	return [...v].map(x => x.toString(16).padStart(2, '0')).join('');
 }
@@ -1050,13 +1048,13 @@ async function ens_avatar(provider, input) {
 				call(provider, contract, ABIEncoder.method(SIG_tokenURI).big(token_big))
 			]);
 			owner = ABIDecoder.from_hex(owner).addr();
-			meta_uri = ABIDecoder.from_hex(meta).string();
+			meta_uri = ABIDecoder.from_hex(meta_uri).string();
 			return {type: 'erc721', name, address, avatar, contract: contract, token, meta_uri, is_owner: address === owner};
 		} else if (part1.startsWith('erc1155:')) {
 			if (parts.length < 3) throw new Error('Invalid avatar format: expected token');
 			let contract = part1.slice(part1.indexOf(':') + 1);
 			let token = parts[2];
-			let hex_token = '0x' + BigInt(token).toString(16).padStart(64, '0');
+			let hex_token = BigInt(token).toString(16).padStart(64, '0'); // no 0x
 			const SIG_tokenURI  = '0e89341c'; // uri(uint256)
 			const SIG_balanceOf = '00fdd58e'; // balanceOf(address,uint256)
 			let [balance, meta_uri] = await Promise.all([
