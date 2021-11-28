@@ -1,4 +1,5 @@
-export function smol_provider(url) {
+// TODO: this is still a work in progress
+export function smol_provider(url, WebSocket) {
 	const CONNECT_TIMEOUT = 10000;
 	const REQUEST_TIMEOUT = 5000;
 	let _ws, _id, _reqs;

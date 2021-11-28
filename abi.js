@@ -1,16 +1,9 @@
 import {bytes_from_str, bytes_from_hex, hex_from_bytes, keccak} from '@adraffy/keccak';
-
-export function method_signature(x) {
-	if (typeof x === 'string') {	
-		return keccak().update(x).hex.slice(0, 8);
-	} else {
-		throw new TypeError('unknown input');
-	}
-}
+import {checksum_address} from './utils.js';
 
 export function number_from_abi(x) {
 	if (typeof x === 'string') {
-		if (/^(0x)?[a-f0-9]{0,12}$/i.test(x)) return parseInt(x, 16); // is this a fast path?
+		if (/^(0x)?[a-f0-9]{0,12}$/i.test(x)) return parseInt(x, 16); // worth it?
 		x = bytes_from_hex(x);
 	} else if (Array.isArray(x)) {
 		x = Uint8Array.from(x);
@@ -64,11 +57,7 @@ export class ABIDecoder {
 		if (this.number(12) != 0) throw new TypeError('expected zero');
 		let v = this.read(20);
 		let addr = hex_from_bytes(v);
-		if (checksum) { // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-55.md
-			let hash = keccak().update(addr).hex;
-			addr = [...addr].map((x, i) => hash.charCodeAt(i) >= 56 ? x.toUpperCase() : x).join('');
-		}
-		return `0x${addr}`; 
+		return checksum ? checksum_address(addr) : `0x${addr}`; 
 	}
 }
 
@@ -91,10 +80,23 @@ function set_bytes_to_number(v, i) {
 }
 
 export class ABIEncoder {
-	constructor(capacity = 256) {
+	static method(method) {
+		if (typeof method !== 'string') throw new TypeError('expected string');
+		let N = 4;
+		let enc = new ABIEncoder(N); // method signature doesn't contribute to offset
+		if (method.includes('(')) {
+			enc.bytes(keccak().update(method).bytes.subarray(0, N));
+		} else {
+			enc.hex(method);
+			if (enc.pos != N) throw new Error('method should be a signature or 8-char hex');
+		}
+		return enc;
+	}
+	constructor(offset = 0, capacity = 256) {
 		if (!Number.isSafeInteger(capacity) || capacity < 1) throw new TypeError('expected positive initial capacity');
 		this.buf = new Uint8Array(capacity);
 		this.pos = 0;
+		this.offset = offset;
 		this.tails = [];
 	}
 	reset() {
@@ -105,13 +107,13 @@ export class ABIEncoder {
 	}
 	build_hex() { return '0x' + hex_from_bytes(this.build()); }
 	build() {
-		let {pos, tails} = this;
+		let {pos, tails, offset} = this;
 		let len = tails.reduce((a, [_, v]) => v.length, 0);
 		if (len > 0) {
 			this.alloc(len);
 			let {buf} = this;
 			for (let [off, v] of tails) {
-				set_bytes_to_number(buf.subarray(off, off + 32), pos); // global offset
+				set_bytes_to_number(buf.subarray(off, off + 32), pos - offset); // global offset
 				buf.set(v, pos);
 				pos += v.length;
 			}
@@ -141,17 +143,18 @@ export class ABIEncoder {
 		set_bytes_to_number(this.alloc(n), i);
 		return this; // chainable
 	}
-	string(x) {
-		if (typeof x !== 'string') throw new TypeError('expcted string');
+	string(s) {
+		if (typeof s !== 'string') throw new TypeError('expcted string');
 		let {pos} = this; // remember offset
 		this.alloc(32); // reserve spot
-		let v = bytes_from_str(x);
+		let v = bytes_from_str(s);
 		let tail = new Uint8Array((v.length + 63) & ~31); // len + bytes + 0*
 		set_bytes_to_number(tail.subarray(0, 32), v.length);
 		tail.set(v, 32);
 		this.tails.push([pos, tail]);
 		return this; // chainable
 	}
+	hex(s) { return this.bytes(bytes_from_hex(s)); } // throws
 	bytes(v) {
 		if (!(v instanceof Uint8Array)) {
 			if (v instanceof ArrayBuffer) { 
@@ -168,7 +171,7 @@ export class ABIEncoder {
 		return this; // chainable
 	}
 	addr(x) {
-		let v = bytes_from_hex(x);
+		let v = bytes_from_hex(x); // throws
 		if (v.length != 20) throw new TypeError('expected address');
 		this.alloc(32).set(v, 12);
 		return this; // chainable

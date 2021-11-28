@@ -2,8 +2,6 @@
 
 // primary api
 function keccak(bits = 256) { return new Fixed(bits,        0b1); } // [1]0*1
-function sha3(bits = 256)   { return new Fixed(bits,      0b110); } // [011]0*1
-function shake(bits)        { return new Extended(bits, 0b11111); } // [11111]0*1
 
 // returns Uint8Array from string
 // accepts only string
@@ -41,44 +39,6 @@ function bytes_from_hex(s) {
 // no 0x-
 function hex_from_bytes(v) {
 	return [...v].map(x => x.toString(16).padStart(2, '0')).join('');
-}
-
-// returns str from Uint8Array
-function str_from_bytes(v) {
-	/*
-	let cps = [];
-	let pos = 0;
-	let cp = 0;
-	let need = 0;
-	while (pos < v.length) {
-		let b0 = v[pos++];
-		if (need > 0) {
-			if ((b0 >> 6) != 2) throw new Error('malformed utf8: expected continuation')
-			cp = (cp << 6) | (b0 & 0b111111);
-			if (--need == 0) cps.push(cp);
-			continue;
-		}
-		if (b0 < 0b01111111) {
-			cps.push(b0);
-		} else if (b0 < 0b11011111) {
-			cp = b0 & 0b11111;
-			need = 1;
-		} else if (b0 < 0b11101111) {
-			cp = b0 & 0b1111;
-			need = 2;
-		} else {
-			cp = b0 & 0b111;
-			need = 3;
-		}
-	}
-	if (need > 0) throw new RangeError('malformed utf8: expected more bytes');
-	return String.fromCodePoint(...ret);
-	*/
-	try {
-		return decodeURIComponent(escape(String.fromCharCode(...v)));
-	} catch (err) {
-		throw new Error('malformed utf8');
-	}
 }
 
 class KeccakHasher {
@@ -165,33 +125,6 @@ class KeccakHasher {
 		sponge[block_count - 1] ^= 0x80000000;
 		permute32(sponge);
 		this.ragged_shift = -1; // mark as finalized
-	}
-}
-
-class Extended extends KeccakHasher {
-	constructor(bits, padding) {
-		super(bits << 1, padding);
-		this.size0 = bits >> 2; // default output size
-		this.byte_offset = 0; // byte-offset of output
-	}
-	hex(size) { return hex_from_bytes(this.bytes(size)); }
-	bytes(size) {
-		this.finalize();
-		if (!size) size = this.size0;
-		let {sponge, byte_offset, block_count} = this;
-		let trim = (byte_offset & 3);
-		let blocks = (trim > 0) + ((size + 3) >> 2);
-		let output = new Int32Array(blocks);
-		let block_index = (byte_offset >> 2) % block_count;
-		for (let i = 0; i < blocks; i++) {
-			output[i] = sponge[block_index++];
-			if (block_index == block_count) {
-				permute32(sponge);
-				block_index = 0;
-			}
-		}
-		this.byte_offset = byte_offset + size;
-		return new Uint8Array(output.buffer, trim, size);
 	}
 }
 
@@ -397,17 +330,31 @@ function permute32(s) {
 	}
 }
 
-function method_signature(x) {
+// accepts address as string (0x-prefix is optional) 
+// returns 0x-prefixed checksummed address 
+// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-55.md
+function checksum_address(s) {
+	if (typeof s !== 'string') throw new TypeError('expected string');
+	if (s.startsWith('0x')) s = s.slice(2);
+	s = s.toLowerCase();
+	if (!/^[a-f0-9]{40}$/.test(s)) throw new TypeError('expected 40-char hex');
+	let hash = keccak().update(s).hex;
+	return '0x' + [...s].map((x, i) => hash.charCodeAt(i) >= 56 ? x.toUpperCase() : x).join('');
+}
+
+/*
+export function method_signature(x) {
 	if (typeof x === 'string') {	
 		return keccak().update(x).hex.slice(0, 8);
 	} else {
 		throw new TypeError('unknown input');
 	}
 }
+*/
 
 function number_from_abi(x) {
 	if (typeof x === 'string') {
-		if (/^(0x)?[a-f0-9]{0,12}$/i.test(x)) return parseInt(x, 16); // is this a fast path?
+		if (/^(0x)?[a-f0-9]{0,12}$/i.test(x)) return parseInt(x, 16); // worth it?
 		x = bytes_from_hex(x);
 	} else if (Array.isArray(x)) {
 		x = Uint8Array.from(x);
@@ -461,11 +408,7 @@ class ABIDecoder {
 		if (this.number(12) != 0) throw new TypeError('expected zero');
 		let v = this.read(20);
 		let addr = hex_from_bytes(v);
-		if (checksum) { // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-55.md
-			let hash = keccak().update(addr).hex;
-			addr = [...addr].map((x, i) => hash.charCodeAt(i) >= 56 ? x.toUpperCase() : x).join('');
-		}
-		return `0x${addr}`; 
+		return checksum ? checksum_address(addr) : `0x${addr}`; 
 	}
 }
 
@@ -488,10 +431,23 @@ function set_bytes_to_number(v, i) {
 }
 
 class ABIEncoder {
-	constructor(capacity = 256) {
+	static method(method) {
+		if (typeof method !== 'string') throw new TypeError('expected string');
+		let N = 4;
+		let enc = new ABIEncoder(N); // method signature doesn't contribute to offset
+		if (method.includes('(')) {
+			enc.bytes(keccak().update(method).bytes.subarray(0, N));
+		} else {
+			enc.hex(method);
+			if (enc.pos != N) throw new Error('method should be a signature or 8-char hex');
+		}
+		return enc;
+	}
+	constructor(offset = 0, capacity = 256) {
 		if (!Number.isSafeInteger(capacity) || capacity < 1) throw new TypeError('expected positive initial capacity');
 		this.buf = new Uint8Array(capacity);
 		this.pos = 0;
+		this.offset = offset;
 		this.tails = [];
 	}
 	reset() {
@@ -502,13 +458,13 @@ class ABIEncoder {
 	}
 	build_hex() { return '0x' + hex_from_bytes(this.build()); }
 	build() {
-		let {pos, tails} = this;
+		let {pos, tails, offset} = this;
 		let len = tails.reduce((a, [_, v]) => v.length, 0);
 		if (len > 0) {
 			this.alloc(len);
 			let {buf} = this;
 			for (let [off, v] of tails) {
-				set_bytes_to_number(buf.subarray(off, off + 32), pos); // global offset
+				set_bytes_to_number(buf.subarray(off, off + 32), pos - offset); // global offset
 				buf.set(v, pos);
 				pos += v.length;
 			}
@@ -538,17 +494,18 @@ class ABIEncoder {
 		set_bytes_to_number(this.alloc(n), i);
 		return this; // chainable
 	}
-	string(x) {
-		if (typeof x !== 'string') throw new TypeError('expcted string');
+	string(s) {
+		if (typeof s !== 'string') throw new TypeError('expcted string');
 		let {pos} = this; // remember offset
 		this.alloc(32); // reserve spot
-		let v = bytes_from_str(x);
+		let v = bytes_from_str(s);
 		let tail = new Uint8Array((v.length + 63) & ~31); // len + bytes + 0*
 		set_bytes_to_number(tail.subarray(0, 32), v.length);
 		tail.set(v, 32);
 		this.tails.push([pos, tail]);
 		return this; // chainable
 	}
+	hex(s) { return this.bytes(bytes_from_hex(s)); } // throws
 	bytes(v) {
 		if (!(v instanceof Uint8Array)) {
 			if (v instanceof ArrayBuffer) { 
@@ -565,82 +522,11 @@ class ABIEncoder {
 		return this; // chainable
 	}
 	addr(x) {
-		let v = bytes_from_hex(x);
+		let v = bytes_from_hex(x); // throws
 		if (v.length != 20) throw new TypeError('expected address');
 		this.alloc(32).set(v, 12);
 		return this; // chainable
 	}
 }
 
-function smol_provider(url) {
-	const CONNECT_TIMEOUT = 10000;
-	const REQUEST_TIMEOUT = 5000;
-	let _ws, _id, _reqs;
-	return async (args) => {
-		if (_ws === undefined) { // disconnected state
-			let queue = _ws = []; // change state		 
-			let s = new WebSocket(url);
-			let timer, ful;
-			try {  
-				await new Promise((ful, rej) => {
-					ful = ful;
-					rej = rej;
-					timer = setTimeout(() => rej(new Error('Timeout')), CONNECT_TIMEOUT);
-					s.addEventListener('close', rej);
-					s.addEventListener('error', rej);
-					s.addEventListener('open', ful, {once: true});
-				});
-			} catch (err) {
-				_ws = undefined; // reset state
-				s.removeEventListener('open', ful);
-				for (let {rej} of queue) rej(err);
-				s.close();
-				throw err;
-			} finally {
-				clearTimeout(timer);
-			} 
-			s.removeEventListener('error', ful);   
-			s.removeEventListener('close', ful);	  
-			_ws = s; // connected state
-			_id = 0;
-			_reqs = {};
-			for (let {ful} of queue) ful();
-			s.addEventListener('message', ({data}) => {
-				let json = JSON.parse(data);
-				let request = _reqs[json.id];
-				if (!request) return;
-				delete _reqs[json.id];
-				clearTimeout(request.timer);
-				let {result, error} = json;
-				if (result) return request.ful(result);
-				let err = new Error(error?.message ?? 'Unknown Error');
-				if ('code' in error) err.code = error.code;
-				request.rej(err);
-			});
-			function die(err) {
-				if (s !== _ws) return;
-				_ws = undefined; // reset state
-				for (let {rej} of Object.values(_reqs)) rej(err);
-				_reqs = undefined;
-			}
-			s.addEventListener('close', (e) => die(Error('Unexpected close')));
-			s.addEventListener('error', die);
-		} else if (Array.isArray(_ws)) { // already connecting
-			await new Promimse((ful, rej) => {
-				_ws.push({ful, rej});
-			});
-		}
-		let id = ++_id; 
-		let reqs = _reqs;
-		return new Promise((ful, rej) => {			  
-			let timer = setTimeout(() => {
-				delete reqs[id];
-				rej(new Error('Timeout'));
-			}, REQUEST_TIMEOUT);
-			_reqs[id] = {timer, ful, rej};
-			_ws.send(JSON.stringify({jsonrpc: '2.0', id, ...args}));
-		});
-	};
-}
-
-export { ABIDecoder, ABIEncoder, bytes_from_hex, bytes_from_str, hex_from_bytes, keccak, method_signature, number_from_abi, sha3, shake, smol_provider, str_from_bytes };
+export { ABIDecoder, ABIEncoder, number_from_abi };
