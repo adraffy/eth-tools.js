@@ -27,13 +27,6 @@ console.log(hex_from_bytes([1,2,3,4])); // "01020304" (no 0x-prefix)
 console.log(str_from_bytes([97]));      // "A", throws if invalid utf8
 ```
 
-## [@adraffy/ens_normalize.js](https://github.com/adraffy/ens_normalize.js/)
-```Javascript
-import {ens_normalize} from '@adraffy/eth-tools';
-
-let normalized = ens_normalize('🚴‍♂️.eth'); // throws if error
-```
-
 ## ABIEncoder
 ```Javascript
 import {ABIEncoder} from '@adraffy/eth-tools';
@@ -59,15 +52,18 @@ console.log(dec.big());    // read u256 as BigInt
 console.log(dec.addr());   // read 40-char hex-string (0x-prefixed w/checksum)
 ```
 
+## [@adraffy/ens_normalize.js](https://github.com/adraffy/ens_normalize.js/)
+```Javascript
+import {ens_normalize} from '@adraffy/eth-tools';
+
+let normalized = ens_normalize('🚴‍♂️.eth'); // throws if error
+```
+
 ### ens.js
 ```Javascript
-import {ens_normalize, ens_node_from_name, ens_address_from_name, ens_name_from_address, ens_avatar} from '@adraffy/eth-tools';
+import {ens_node_from_name, ens_address_from_name, ens_name_from_address, ens_avatar} from '@adraffy/eth-tools';
 
 let provider = window.ethereum; // or some other async provider (see below)
-
- // normalize a name
-console.log(ens_normalize('niCK.eth')); 
-// returns "nick.eth"
 
 // get hash of a name (called a node)
 console.log(ens_node_from_name('nick.eth')); // returns 64-char hex, no 0x-prefix, does not normalize!
