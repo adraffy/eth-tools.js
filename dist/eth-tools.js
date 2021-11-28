@@ -397,6 +397,21 @@ function permute32(s) {
 	}
 }
 
+// expects a string
+// returns 64-char hex-string, no 0x-prefix
+// https://eips.ethereum.org/EIPS/eip-137#name-syntax
+function namehash(name) {
+	if (typeof name !== 'string') throw new TypeError('Expected string');
+	let buf = new Uint8Array(64); 
+	if (name.length > 0) {
+		for (let label of name.split('.').reverse()) {
+			buf.set(keccak().update(label).bytes, 32);
+			buf.set(keccak().update(buf).bytes, 0);
+		}
+	}
+	return hex_from_bytes(buf.subarray(0, 32));
+}
+
 // accepts address as string (0x-prefix is optional) 
 // returns 0x-prefixed checksummed address 
 // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-55.md
@@ -957,20 +972,9 @@ function ens_normalize(name, ignore_disallowed = false) { // https://unicode.org
 	}).join('.');
 }
 
-// expects a string
-// returns 64-char hex-string, no 0x-prefix
 // https://eips.ethereum.org/EIPS/eip-137#name-syntax
-function ens_namehash(name) {
-	if (typeof name !== 'string') throw new TypeError('Expected string');
-	let buf = new Uint8Array(64); 
-	if (name.length > 0) {
-		for (let label of name.split('.').reverse()) {
-			buf.set(keccak().update(label).bytes, 32);
-			buf.set(keccak().update(buf).bytes, 0);
-		}
-	}
-	return hex_from_bytes(buf.subarray(0, 32));
-}
+// warning: this does not normalize
+const ens_node_from_name = namehash;
 
 // https://docs.ens.domains/ens-deployments
 const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e'; // ens registry contract on mainnet
@@ -978,26 +982,26 @@ const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e'; // ens regist
 // https://eips.ethereum.org/EIPS/eip-137
 async function ens_address_from_name(provider, name0) {	
 	let name = ens_normalize(name0); // throws
-	let namehash = ens_namehash(name);
-	let resolver = await call_resolver(provider, namehash);
+	let node = ens_node_from_name(name);
+	let resolver = await call_resolver(provider, node);
 	let address = false;
 	if (!is_null_address(resolver)) {
-		address = await call_resolver_addr(provider, resolver, namehash);
+		address = await call_resolver_addr(provider, resolver, node);
 	}
-	return {name, name0, namehash, resolver, address};
+	return {name, name0, node, resolver, address};
 }
 
 // https://eips.ethereum.org/EIPS/eip-181
 async function ens_name_from_address(provider, address) {
 	address = checksum_address(address); // throws
-	let namehash = ens_namehash(`${address.slice(2).toLowerCase()}.addr.reverse`); 
-	let resolver = await call_resolver(provider, namehash);
+	let node = ens_node_from_name(`${address.slice(2).toLowerCase()}.addr.reverse`); 
+	let resolver = await call_resolver(provider, node);
 	let name = false;
 	if (!is_null_address(resolver)) {			
 		const SIG = '691f3431'; // name(bytes)
-		name = ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(namehash))).string();
+		name = ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(node))).string();
 	}
-	return {address, namehash, resolver, name};
+	return {address, node, resolver, name};
 }
 
 // https://medium.com/the-ethereum-name-service/step-by-step-guide-to-setting-an-nft-as-your-ens-profile-avatar-3562d39567fc
@@ -1011,15 +1015,15 @@ async function ens_avatar(provider, input) {
 		name = ens_normalize(input); // throws
 	}
 	if (name === false) throw new Error(`No name for address`);
-	let namehash = ens_namehash(name);
-	let resolver = await call_resolver(provider, namehash);
+	let node = ens_node_from_name(name);
+	let resolver = await call_resolver(provider, node);
 	if (is_null_address(resolver)) {
 		return {type: 'none', name};
 	}
 	if (!address) {
-		address = await call_resolver_addr(provider, resolver, namehash);
+		address = await call_resolver_addr(provider, resolver, node);
 	}
-	let avatar = await call_resolver_text(provider, resolver, namehash, 'avatar');
+	let avatar = await call_resolver_text(provider, resolver, node, 'avatar');
 	if (avatar.length == 0) { 
 		return {type: 'null', name, address};
 	}
@@ -1067,28 +1071,28 @@ async function ens_avatar(provider, input) {
 	return {type: 'unknown', name, address, avatar};	
 }
 
-async function call_resolver(provider, namehash) {
+async function call_resolver(provider, node) {
 	const SIG = '0178b8bf'; // resolver(bytes32)
 	try {
-		return ABIDecoder.from_hex(await call(provider, ENS_REGISTRY, ABIEncoder.method(SIG).hex(namehash))).addr();
+		return ABIDecoder.from_hex(await call(provider, ENS_REGISTRY, ABIEncoder.method(SIG).hex(node))).addr();
 	} catch (err) {
 		throw wrap_error('Invalid response from registry', err);
 	}
 }
 
-async function call_resolver_addr(provider, resolver, namehash) {
+async function call_resolver_addr(provider, resolver, node) {
 	const SIG = '3b3b57de'; // addr(bytes32)
 	try {
-		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(namehash))).addr();
+		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(node))).addr();
 	} catch (err) {
 		throw wrap_error('Invalid response from resolver for addr()', err)
 	}
 }
 
-async function call_resolver_text(provider, resolver, namehash, key) {
+async function call_resolver_text(provider, resolver, node, key) {
 	const SIG = '59d1d43c'; // text(bytes32,string)
 	try {
-		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(namehash).string(key))).string();
+		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).hex(node).string(key))).string();
 	} catch (err) {
 		throw wrap_error(`Invalid response from resolver for text(${key})`, err);
 	}
@@ -1096,12 +1100,11 @@ async function call_resolver_text(provider, resolver, namehash, key) {
 
 function call(provider, to, enc) {
 	if (typeof provider === 'object') {
-		let og = provider;
-		if (og.request) {
-			provider = (...a) => og.request(...a);
-		} else if (og.sendAsync) {
-			provider = (...a) => og.sendAsync(...a);
-		}
+		if (provider.request) {
+			provider = provider.request.bind(provider); 
+		} else if (provider.sendAsync) {
+			provider = provider.sendAsync.bind(provider);
+		} // what else?
 	}
 	if (typeof provider !== 'function') throw new TypeError('unknown provider');
 	return provider({method: 'eth_call', params:[{to, data: enc.build_hex()}, 'latest']});
@@ -1113,6 +1116,7 @@ function wrap_error(s, err) {
 	return wrap;
 }
 
+// TODO: this is still a work in progress
 function smol_provider(url, WebSocket) {
 	const CONNECT_TIMEOUT = 10000;
 	const REQUEST_TIMEOUT = 5000;
@@ -1186,7 +1190,7 @@ function smol_provider(url, WebSocket) {
 
 class FetchProvider {
 	constructor(url, fetch_api) {
-		if (!fetch_api) fetch_api = fetch;
+		if (!fetch_api) fetch_api = globalThis.fetch.bind(globalThis); 
 		if (typeof fetch_api !== 'function') throw new TypeError('fetch api should be a function');
 		if (typeof url !== 'string') throw new TypeError('expected url');
 		this.fetch_api = fetch_api;
@@ -1223,4 +1227,4 @@ class FetchProvider {
 	}
 }
 
-export { ABIDecoder, ABIEncoder, FetchProvider, bytes_from_hex, bytes_from_str, checksum_address, ens_address_from_name, ens_avatar, ens_name_from_address, ens_namehash, ens_normalize, get_mapped, hex_from_bytes, idna, is_combining_mark, is_disallowed, is_ignored, is_null_address, is_valid_address, keccak, number_from_abi, sha3, shake, smol_provider, str_from_bytes };
+export { ABIDecoder, ABIEncoder, FetchProvider, bytes_from_hex, bytes_from_str, checksum_address, ens_address_from_name, ens_avatar, ens_name_from_address, ens_node_from_name, ens_normalize, get_mapped, hex_from_bytes, idna, is_combining_mark, is_disallowed, is_ignored, is_null_address, is_valid_address, keccak, namehash, number_from_abi, sha3, shake, smol_provider, str_from_bytes };

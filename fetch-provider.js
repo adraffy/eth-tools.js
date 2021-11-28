@@ -1,6 +1,6 @@
 export class FetchProvider {
 	constructor(url, fetch_api) {
-		if (!fetch_api) fetch_api = fetch;
+		if (!fetch_api) fetch_api = globalThis.fetch.bind(globalThis); 
 		if (typeof fetch_api !== 'function') throw new TypeError('fetch api should be a function');
 		if (typeof url !== 'string') throw new TypeError('expected url');
 		this.fetch_api = fetch_api;

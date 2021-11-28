@@ -133,12 +133,11 @@ async function call_resolver_text(provider, resolver, node, key) {
 
 function call(provider, to, enc) {
 	if (typeof provider === 'object') {
-		let og = provider;
-		if (og.request) {
-			provider = (...a) => og.request(...a);
-		} else if (og.sendAsync) {
-			provider = (...a) => og.sendAsync(...a);
-		}
+		if (provider.request) {
+			provider = provider.request.bind(provider); 
+		} else if (provider.sendAsync) {
+			provider = provider.sendAsync.bind(provider);
+		} // what else?
 	}
 	if (typeof provider !== 'function') throw new TypeError('unknown provider');
 	return provider({method: 'eth_call', params:[{to, data: enc.build_hex()}, 'latest']});
