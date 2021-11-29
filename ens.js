@@ -82,7 +82,7 @@ export async function parse_avatar(avatar, provider = null, address = false) {
 			let contract = part1.slice(part1.indexOf(':') + 1);
 			let token = parts[2];
 			let token_big = BigInt(token);
-			let ret = {type: 'nft', interface: 'erc721', contract, token};
+			let ret = {type: 'nft', interface: 'erc721', contract, token, chain};
 			if (provider && parseInt(provider.chainId) === chain) {
 				const SIG_tokenURI = 'c87b56dd'; // tokenURI(uint256)
 				const SIG_ownerOf  = '6352211e'; // ownerOf(uint256)
@@ -93,7 +93,7 @@ export async function parse_avatar(avatar, provider = null, address = false) {
 				ret.owner = owner;
 				ret.meta_uri = meta_uri;
 				if (address) {
-					ret.is_owner = address === owner;
+					ret.owned = address === owner ? 1 : 0;
 				}
 			}
 			return ret;
@@ -101,21 +101,20 @@ export async function parse_avatar(avatar, provider = null, address = false) {
 			let contract = part1.slice(part1.indexOf(':') + 1);
 			let token = parts[2];
 			let token_hex = BigInt(token).toString(16).padStart(64, '0'); // no 0x
-			let ret = {type: 'nft', interface: 'erc1155', contract, token};
+			let ret = {type: 'nft', interface: 'erc1155', contract, token, chain};
 			if (provider && parseInt(provider.chainId) === chain) {
-				const SIG_tokenURI  = '0e89341c'; // uri(uint256)
+				const SIG_uri       = '0e89341c'; // uri(uint256)
 				const SIG_balanceOf = '00fdd58e'; // balanceOf(address,uint256)
 				let [balance, meta_uri] = await Promise.all([
 					!address ? -1 : eth_call(provider, contract, ABIEncoder.method(SIG_balanceOf).addr(address).add_hex(token_hex)).then(x => x.number()),
-					eth_call(provider, contract, ABIEncoder.method(SIG_tokenURI).add_hex(token_hex)).then(x => x.string())
+					eth_call(provider, contract, ABIEncoder.method(SIG_uri).add_hex(token_hex)).then(x => x.string())
 				]);
 				ret.meta_uri = meta_uri.replace(/{id}/, token_hex); // 1155 standard
 				if (address) {
-					ret.owned = balance;				
-					ret.is_owner = balance > 0;
+					ret.owned = balance;
 				}
 			}
-			return {type: 'nft', interface: 'erc1155', chain, contract, token, meta_uri, is_owner: balance > 0};
+			return ret;
 		} else {
 			return {type: 'invalid', error: `unsupported contract interface: ${part1}`};
 		}		

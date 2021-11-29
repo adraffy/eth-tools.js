@@ -7,7 +7,7 @@ export function retry(provider, retry = 2, delay = 1000) {
 			try {
 				return await provider.request(args);
 			} catch (err) {
-				if (error.code === -32000 && n++ < retry) { 
+				if (err.code === -32000 && n++ < retry) { 
 					// "header not found"
 					// this seems to be an geth bug (infura, cloudflare, metamask)
 					await new Promise(ful => setTimeout(ful, delay));
