@@ -44,7 +44,7 @@ console.log(dec.addr());   // read 40-char hex-string (0x-prefixed w/checksum)
 //
 
 import {ens_address_from_name, ens_name_from_address, ens_avatar} from '../eth-tools.js';
-import provider from './cloudflare.js'; 
+import provider from './nodejs-provider.js'; 
 
  // normalize a name
  console.log(ens_normalize('niCK.eth')); 

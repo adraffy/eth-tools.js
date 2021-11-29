@@ -15,16 +15,4 @@ for (let [input, address0] of ADDRESSES) {
 
 if (!is_null_hex('0x00000000000000000000000000000000')) throw new Error('wtf');
 
-let BASE_58 = [
-	['Hello World!', '2NEpo7TZRRrLZSi2U'],
-	['The quick brown fox jumps over the lazy dog.', 'USm3fpXnKG5EUBx2ndxBDMPVciP5hGey2Jh4NDv6gmeo1LkMeiKrLJUUBk6Z'],
-];
-
-for (let [input, output] of BASE_58) {
-	if (base58_from_bytes(bytes_from_str(input)) !== output) {
-		throw new Error('wtf');
-	}
-}
-
-
 console.log('OK');

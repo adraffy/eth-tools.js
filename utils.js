@@ -1,4 +1,4 @@
-import {keccak, hex_from_bytes, bytes_from_hex, bytes_from_str} from '@adraffy/keccak';
+import {keccak, hex_from_bytes} from '@adraffy/keccak';
 
 // expects a string
 // returns 64-char hex-string, no 0x-prefix
@@ -35,27 +35,11 @@ export function is_null_hex(s) {
 	return /^(0x)?[0]+$/i.test(s);
 }
 
-const BASE_58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'; // removed: "IOl0+/"
-
-// https://tools.ietf.org/id/draft-msporny-base58-01.html
-export function base58_from_bytes(v) {
-	let digits = [];
-	let zero = 0;
-	for (let x of v) {
-		if (digits.length == 0 && x == 0) {
-			zero++;
-			continue;
-		}
-		for (let i = 0; i < digits.length; ++i) {
-			let xx = (digits[i] << 8) | x
-			digits[i] = xx % 58;
-			x = (xx / 58) | 0;
-		}
-		while (x > 0) {
-			digits.push(x % 58);
-			x = (x / 58) | 0
-		}
+export function is_multihash(s) {
+	try {
+		let v = bytes_from_base58(s);
+		return v.length >= 2 && v.length == 2 + v[1];
+	} catch (ignored) {
+		return false;
 	}
-	for (; zero > 0; zero--) digits.push(0);
-	return String.fromCharCode(...digits.reverse().map(x => BASE_58.charCodeAt(x)));
 }

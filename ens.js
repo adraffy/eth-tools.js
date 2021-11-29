@@ -1,6 +1,7 @@
 import {ens_normalize} from '@adraffy/ens-normalize';
-import {ABIDecoder, ABIEncoder} from './abi.js';
-import {namehash as ens_node_from_name, checksum_address, is_null_hex, base58_from_bytes} from './utils.js';
+import {eth_call, ABIDecoder, ABIEncoder} from './abi.js';
+import {namehash as ens_node_from_name, checksum_address, is_null_hex} from './utils.js';
+import {base58_from_bytes} from './base58.js';
 import ADDR_TYPES from './ens-address-types.js';
 
 export {ADDR_TYPES}; // note: this is mutable
@@ -25,7 +26,7 @@ function resolved_value() {
 
 export async function ens_address_from_node(provider, node) {
 	let resolver = await call_registry_resolver(provider, node);
-	let address = false;
+	let address = false; // TODO: decide this placeholder value
 	if (!is_null_hex(resolver)) {
 		address = await call_resolver_addr(provider, resolver, node);
 	}
@@ -34,7 +35,7 @@ export async function ens_address_from_node(provider, node) {
 
 // https://eips.ethereum.org/EIPS/eip-137
 export async function ens_address_from_name(provider, name0, ...a) {	
-	let name = ens_normalize(name0, ...a); // throws
+	let name = ens_normalize(name0, ...a); // throws 
 	let node = ens_node_from_name(name);
 	return {name0, name, ...await ens_address_from_node(provider, node), [RESOLVED]: resolved_value()};
 }
@@ -47,60 +48,79 @@ export async function ens_name_from_address(provider, address) {
 	let ret = {node, resolver, address, [RESOLVED]: resolved_value()};
 	if (!is_null_hex(resolver)) {
 		const SIG = '691f3431'; // name(bytes)
-		ret.name = ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).string();
+		ret.name = (await eth_call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).string();
 	}
 	return ret;
 }
 
 // https://medium.com/the-ethereum-name-service/step-by-step-guide-to-setting-an-nft-as-your-ens-profile-avatar-3562d39567fc
+// https://medium.com/the-ethereum-name-service/major-refresh-of-nft-images-metadata-for-ens-names-963090b21b23
+// https://github.com/ensdomains/ens-metadata-service
 export async function ens_avatar(provider, input) {
 	let ret = await resolve_name_from_input(provider, input);
 	let {node, resolver, address} = ret;
 	if (is_null_hex(resolver)) return {type: 'none', ...ret};
-	if (!address) ret.address = address = await call_resolver_addr(provider, resolver, node);
-	let avatar = await call_resolver_text(provider, resolver, node, 'avatar');
-	if (avatar.length == 0) return {type: 'null', ...ret}; 
-	ret.avatar = avatar;
-	if (avatar.includes('://') || avatar.startsWith('data:')) return {type: 'url', ...ret};
-	// parse inline format
+	if (!address) ret.address = await call_resolver_addr(provider, resolver, node);
+	ret.avatar = await call_resolver_text(provider, resolver, node, 'avatar');
+	return {...ret, ...await parse_avatar(ret.avatar, provider, ret.address)};
+}
+
+// note: the argument order here is non-traditional
+export async function parse_avatar(avatar, provider = null, address = false) {
+	if (typeof avatar !== 'string') throw new Error('Invalid avatar: expected string');
+	if (avatar.length == 0) return {type: 'null'}; 
+	if (avatar.includes('://') || avatar.startsWith('data:')) return {type: 'url'};
 	let parts = avatar.split('/');
 	let part0 = parts[0];
-	if (part0.startsWith('eip155:')) {
-		if (parts.length < 2) throw new Error('Invalid avatar format: expected type');
+	if (part0.startsWith('eip155:')) { // nft format  
+		if (parts.length < 2) return {type: 'invalid', error: 'expected contract'};
+		if (parts.length < 3) return {type: 'invalid', error: 'expected token'};
 		let chain = parseInt(part0.slice(part0.indexOf(':') + 1));
-		if (chain != 1) throw new Error('Avatar not on mainnet');
+		if (!(chain > 0)) return {type: 'invalid', error: 'expected chain id'};
 		let part1 = parts[1];
 		if (part1.startsWith('erc721:')) {
-			if (parts.length < 3) throw new Error('Invalid avatar format: expected token');
 			let contract = part1.slice(part1.indexOf(':') + 1);
 			let token = parts[2];
 			let token_big = BigInt(token);
-			const SIG_tokenURI = 'c87b56dd'; // tokenURI(uint256)
-			const SIG_ownerOf  = '6352211e'; // ownerOf(uint256)
-			let [owner, meta_uri] = await Promise.all([
-				call(provider, contract, ABIEncoder.method(SIG_ownerOf).big(token_big)),
-				call(provider, contract, ABIEncoder.method(SIG_tokenURI).big(token_big))
-			]);
-			owner = ABIDecoder.from_hex(owner).addr();
-			meta_uri = ABIDecoder.from_hex(meta_uri).string();
-			return {type: 'erc721', ...ret, contract, token, meta_uri, is_owner: address === owner};
+			let ret = {type: 'nft', interface: 'erc721', contract, token};
+			if (provider && parseInt(provider.chainId) === chain) {
+				const SIG_tokenURI = 'c87b56dd'; // tokenURI(uint256)
+				const SIG_ownerOf  = '6352211e'; // ownerOf(uint256)
+				let [owner, meta_uri] = await Promise.all([
+					eth_call(provider, contract, ABIEncoder.method(SIG_ownerOf).big(token_big)).then(x => x.addr()),
+					eth_call(provider, contract, ABIEncoder.method(SIG_tokenURI).big(token_big)).then(x => x.string())
+				]);
+				ret.owner = owner;
+				ret.meta_uri = meta_uri;
+				if (address) {
+					ret.is_owner = address === owner;
+				}
+			}
+			return ret;
 		} else if (part1.startsWith('erc1155:')) {
-			if (parts.length < 3) throw new Error('Invalid avatar format: expected token');
 			let contract = part1.slice(part1.indexOf(':') + 1);
 			let token = parts[2];
-			let hex_token = BigInt(token).toString(16).padStart(64, '0'); // no 0x
-			const SIG_tokenURI  = '0e89341c'; // uri(uint256)
-			const SIG_balanceOf = '00fdd58e'; // balanceOf(address,uint256)
-			let [balance, meta_uri] = await Promise.all([
-				call(provider, contract, ABIEncoder.method(SIG_balanceOf).addr(address).add_hex(hex_token)),
-				call(provider, contract, ABIEncoder.method(SIG_tokenURI).add_hex(hex_token))
-			]);
-			balance = ABIDecoder.from_hex(balance).number();
-			meta_uri = ABIDecoder.from_hex(meta_uri).string().replace(/{id}/, hex_token); // 1155 standard
-			return {type: 'erc1155', ...ret, contract, token, meta_uri, is_owner: balance > 0};
-		} 			
+			let token_hex = BigInt(token).toString(16).padStart(64, '0'); // no 0x
+			let ret = {type: 'nft', interface: 'erc1155', contract, token};
+			if (provider && parseInt(provider.chainId) === chain) {
+				const SIG_tokenURI  = '0e89341c'; // uri(uint256)
+				const SIG_balanceOf = '00fdd58e'; // balanceOf(address,uint256)
+				let [balance, meta_uri] = await Promise.all([
+					!address ? -1 : eth_call(provider, contract, ABIEncoder.method(SIG_balanceOf).addr(address).add_hex(token_hex)).then(x => x.number()),
+					eth_call(provider, contract, ABIEncoder.method(SIG_tokenURI).add_hex(token_hex)).then(x => x.string())
+				]);
+				ret.meta_uri = meta_uri.replace(/{id}/, token_hex); // 1155 standard
+				if (address) {
+					ret.owned = balance;				
+					ret.is_owner = balance > 0;
+				}
+			}
+			return {type: 'nft', interface: 'erc1155', chain, contract, token, meta_uri, is_owner: balance > 0};
+		} else {
+			return {type: 'invalid', error: `unsupported contract interface: ${part1}`};
+		}		
 	}
-	return {type: 'unknown', ...ret};	
+	return {type: 'unknown'};
 }
 
 // https://eips.ethereum.org/EIPS/eip-634
@@ -121,7 +141,7 @@ export async function ens_text_record(provider, input, keys) {
 // https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/AddrResolver.sol
 export async function ens_addr_record(provider, input, addresses) {
 	if (!Array.isArray(addresses)) addresses = [addresses];
-	addresses = addresses.map(resolve_addr_type_from_input); // throws
+	addresses = addresses.map(get_addr_type_from_input); // throws
 	let ret = await resolve_name_from_input(provider, input);
 	let {node, resolver} = ret;
 	if (!is_null_hex(resolver)) {
@@ -138,7 +158,7 @@ export async function ens_contenthash_record(provider, input) {
 	let {node, resolver} = ret;
 	if (!is_null_hex(resolver)) {
 		const SIG = 'bc1c58d1'; // contenthash(bytes32)
-		let v =ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).memory();
+		let v = (await eth_call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).memory();
 		if (v.length > 0) {
 			ret.contenthash = v;
 			// https://github.com/multiformats/multicodec
@@ -160,15 +180,19 @@ export async function ens_pubkey_record(provider, input) {
 	let {node, resolver} = ret;
 	if (!is_null_hex(resolver)) {
 		const SIG = 'c8690233'; // pubkey(bytes32)
-		let dec = ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node)));
-		ret.pubkey = {x: dec.read(32), y: dec.read(32)};
+		let dec = await eth_call(provider, resolver, ABIEncoder.method(SIG).add_hex(node));
+		ret.pubkey = {x: dec.big(), y: dec.big()};
 	}
 	return ret;
 }
 
+function format_addr_type(i) {
+	return '0x' + i.toString(16).padStart(4, '0');
+}
+
 // see: test/build-address-types.js
 // https://github.com/satoshilabs/slips/blob/master/slip-0044.md
-function resolve_addr_type_from_input(x) {
+function get_addr_type_from_input(x) {
 	if (typeof x === 'string') {
 		let type = ADDR_TYPES[x];
 		if (typeof type !== 'number') throw new Error(`Unknown address type for name: ${x}`);
@@ -179,7 +203,7 @@ function resolve_addr_type_from_input(x) {
 		if (pos >= 0) {
 			name = Object.keys(ADDR_TYPES)[pos];
 		} else {
-			name = '0x' + x.toString(16).padStart(4, '0');
+			name = format_addr_type(x);
 		}
 		return [name, x];
 	} else {
@@ -198,12 +222,20 @@ async function resolve_name_from_input(provider, input) {
 		if (input.length > 0) {
 			let ret;
 			try { 
-				ret = await ens_name_from_address(provider, input); // assume address, will throw if not
-			} catch (ignored) {		
-				ret = {name: ens_normalize(input)}; // assume name, throws
+				// assume input is address
+				// throws immediately if not
+				ret = await ens_name_from_address(provider, input); 
+			} catch (ignored) {
+				// assume input is name
+				// FIXME: no way to choose disallowed behavior 
+				ret = {name: ens_normalize(input)}; // throws
 			}
 			let {name} = ret;
-			if (!name) throw new Error(`No name for address`);
+			if (!name) {
+				// this only happens if input was address
+				// and we couldn't determine a name
+				throw new Error(`No name for address`);
+			}
 			let node = ens_node_from_name(name);
 			let resolver = await call_registry_resolver(provider, node);
 			return {...ret, node, resolver, [RESOLVED]: resolved_value()};
@@ -215,16 +247,18 @@ async function resolve_name_from_input(provider, input) {
 async function call_registry_resolver(provider, node) {
 	const SIG = '0178b8bf'; // resolver(bytes32)
 	try {
-		return ABIDecoder.from_hex(await call(provider, ENS_REGISTRY, ABIEncoder.method(SIG).add_hex(node))).addr();
+		return (await eth_call(provider, ENS_REGISTRY, ABIEncoder.method(SIG).add_hex(node))).addr();
 	} catch (cause) {
 		throw new Error('Invalid response from registry', {cause});
 	}
 }
 
+// this effectively is the same thing as:
+// call_resolver_addr_for_type(node, 60)
 async function call_resolver_addr(provider, resolver, node) {
 	const SIG = '3b3b57de'; // addr(bytes32)
 	try {
-		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).addr();
+		return (await eth_call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).addr();
 	} catch (cause) {
 		throw new Error('Invalid response from resolver for addr', {cause});
 	}
@@ -233,7 +267,7 @@ async function call_resolver_addr(provider, resolver, node) {
 async function call_resolver_text(provider, resolver, node, key) {
 	const SIG = '59d1d43c'; // text(bytes32,string)
 	try {
-		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node).string(key))).string();
+		return (await eth_call(provider, resolver, ABIEncoder.method(SIG).add_hex(node).string(key))).string();
 	} catch (cause) {
 		throw new Error(`Invalid response from resolver for text: ${key}`, {cause});
 	}
@@ -242,20 +276,8 @@ async function call_resolver_text(provider, resolver, node, key) {
 async function call_resolver_addr_for_type(provider, resolver, node, type) {
 	const SIG = 'f1cb7e06'; // addr(bytes32,uint256);
 	try {
-		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node).number(type))).memory();
+		return (await eth_call(provider, resolver, ABIEncoder.method(SIG).add_hex(node).number(type))).memory();
 	} catch (cause) {
-		throw new Error(`Invalid response from resolver for addr of type: 0x${type.toString(16).padStart(4, '0')}`, {cause});
+		throw new Error(`Invalid response from resolver for addr of type: ${format_addr_type(type)}`, {cause});
 	}
-}
-
-function call(provider, to, enc) {
-	if (typeof provider === 'object') {
-		if (provider.request) {
-			provider = provider.request.bind(provider); 
-		} else if (provider.sendAsync) { // support boomer tech
-			provider = provider.sendAsync.bind(provider);
-		} // what else?
-	}
-	if (typeof provider !== 'function') throw new TypeError('unknown provider');
-	return provider({method: 'eth_call', params:[{to, data: enc.build_hex()}, 'latest']});
 }

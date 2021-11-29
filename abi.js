@@ -1,6 +1,18 @@
 import {bytes_from_str, bytes_from_hex, hex_from_bytes, keccak, str_from_bytes} from '@adraffy/keccak';
 import {checksum_address} from './utils.js';
 
+// https://docs.soliditylang.org/en/latest/abi-spec.html
+
+// convenience for making an eth_call
+// return an ABIDecoder
+// https://eth.wiki/json-rpc/API#eth_call
+export async function eth_call(provider, tx, enc = null, tag = 'latest') {
+	if (typeof provider !== 'object') throw new TypeError('expected provider');
+	if (typeof tx === 'string') tx = {to: tx};
+	if (enc instanceof ABIEncoder) tx.data = enc.build_hex();
+	return ABIDecoder.from_hex(await provider.request({method: 'eth_call', params:[tx, tag]}));
+}
+
 export function number_from_abi(x) {
 	if (typeof x === 'string') {
 		if (/^(0x)?[a-f0-9]{0,12}$/i.test(x)) return parseInt(x, 16); // worth it?
@@ -47,6 +59,7 @@ export class ABIDecoder {
 		return buf[pos];
 	}
 	big(n = 32) { return BigInt('0x' + hex_from_bytes(this.read(n))); }
+	boolean() { return this.number() > 0; }	
 	number(n = 32) { return number_from_abi(this.read(n)); }
 	string() { return str_from_bytes(this.memory()); }
 	memory() {
@@ -113,7 +126,7 @@ export class ABIEncoder {
 		}
 		return enc;
 	}
-	constructor(offset = 0, capacity = 256) {
+	constructor(offset = 0, capacity = 256, packed = false) {
 		if (!Number.isSafeInteger(capacity) || capacity < 1) throw new TypeError('expected positive initial capacity');
 		this.buf = new Uint8Array(capacity);
 		this.pos = 0;
@@ -158,6 +171,11 @@ export class ABIEncoder {
 		let v = bytes_from_hex(i.toString(16));
 		if (v.length > n) v = v.subarray(v.length - n);
 		this.alloc(n).set(v, n - v.length);
+		return this; // chainable
+	}
+	bytes_hex(s) { return this.bytes(bytes_from_hex(s)); }
+	bytes(v) { 
+		this.alloc((v.length + 31) & ~31).set(v);		
 		return this; // chainable
 	}
 	number(i, n = 32) {
