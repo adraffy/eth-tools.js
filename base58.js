@@ -29,7 +29,7 @@ export function bytes_from_base58(s) {
 	if (typeof s !== 'string') throw new TypeError('expected string');
 	let v = new Uint8Array(s.length);
 	let zeros = 0;
-    let n = 0;
+	let n = 0;
 	for (let c of s) {
 		let carry = BASE_58.indexOf(c);
 		if (carry < 0) throw new TypeError('expected base58 string');
