@@ -1,15 +1,13 @@
 import {ens_normalize} from '@adraffy/ens-normalize';
 import {ABIDecoder, ABIEncoder} from './abi.js';
-import {namehash, checksum_address, is_null_hex, base58_from_bytes} from './utils.js';
+import {namehash as ens_node_from_name, checksum_address, is_null_hex, base58_from_bytes} from './utils.js';
 import ADDR_TYPES from './ens-address-types.js';
-
-export {ens_normalize};
 
 export {ADDR_TYPES}; // note: this is mutable
 
 // https://eips.ethereum.org/EIPS/eip-137#name-syntax
 // warning: this does not normalize
-export const ens_node_from_name = namehash;
+export {ens_node_from_name};
 
 // https://docs.ens.domains/ens-deployments
 const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e'; // ens registry contract on mainnet
@@ -19,16 +17,20 @@ function resolved_value() {
 	return new Date();
 }
 
-// https://eips.ethereum.org/EIPS/eip-137
-export async function ens_address_from_name(provider, name0) {	
-	let name = ens_normalize(name0); // throws
-	let node = ens_node_from_name(name);
+export async function ens_address_from_node(provider, node) {
 	let resolver = await call_registry_resolver(provider, node);
 	let address = false;
 	if (!is_null_hex(resolver)) {
 		address = await call_resolver_addr(provider, resolver, node);
 	}
-	return {name0, name, node, resolver, address, [RESOLVED]: resolved_value()};
+	return {node, resolver, address};
+}
+
+// https://eips.ethereum.org/EIPS/eip-137
+export async function ens_address_from_name(provider, name0, ...a) {	
+	let name = ens_normalize(name0, ...a); // throws
+	let node = ens_node_from_name(name);
+	return {name0, name, ...await ens_address_from_node(provider, node), [RESOLVED]: resolved_value()};
 }
 
 // https://eips.ethereum.org/EIPS/eip-181
@@ -226,7 +228,7 @@ async function call_resolver_text(provider, resolver, node, key) {
 	const SIG = '59d1d43c'; // text(bytes32,string)
 	try {
 		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node).string(key))).string();
-	} catch (err) {
+	} catch (cause) {
 		throw new Error(`Invalid response from resolver for text: ${key}`, {cause});
 	}
 }
@@ -235,7 +237,7 @@ async function call_resolver_addr_for_type(provider, resolver, node, type) {
 	const SIG = 'f1cb7e06'; // addr(bytes32,uint256);
 	try {
 		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node).number(type))).memory();
-	} catch (err) {
+	} catch (cause) {
 		throw new Error(`Invalid response from resolver for addr of type: 0x${type.toString(16).padStart(4, '0')}`, {cause});
 	}
 }

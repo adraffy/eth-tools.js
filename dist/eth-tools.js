@@ -1884,10 +1884,6 @@ var ADDR_TYPES = {
   "FVDC": 608589380
 };
 
-// https://eips.ethereum.org/EIPS/eip-137#name-syntax
-// warning: this does not normalize
-const ens_node_from_name = namehash;
-
 // https://docs.ens.domains/ens-deployments
 const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e'; // ens registry contract on mainnet
 const RESOLVED = Symbol('ENSResolved');
@@ -1896,22 +1892,26 @@ function resolved_value() {
 	return new Date();
 }
 
-// https://eips.ethereum.org/EIPS/eip-137
-async function ens_address_from_name(provider, name0) {	
-	let name = ens_normalize(name0); // throws
-	let node = ens_node_from_name(name);
+async function ens_address_from_node(provider, node) {
 	let resolver = await call_registry_resolver(provider, node);
 	let address = false;
 	if (!is_null_hex(resolver)) {
 		address = await call_resolver_addr(provider, resolver, node);
 	}
-	return {name0, name, node, resolver, address, [RESOLVED]: resolved_value()};
+	return {node, resolver, address};
+}
+
+// https://eips.ethereum.org/EIPS/eip-137
+async function ens_address_from_name(provider, name0, ...a) {	
+	let name = ens_normalize(name0, ...a); // throws
+	let node = namehash(name);
+	return {name0, name, ...await ens_address_from_node(provider, node), [RESOLVED]: resolved_value()};
 }
 
 // https://eips.ethereum.org/EIPS/eip-181
 async function ens_name_from_address(provider, address) {
 	address = checksum_address(address); // throws
-	let node = ens_node_from_name(`${address.slice(2).toLowerCase()}.addr.reverse`); 
+	let node = namehash(`${address.slice(2).toLowerCase()}.addr.reverse`); 
 	let resolver = await call_registry_resolver(provider, node);
 	let ret = {node, resolver, address, [RESOLVED]: resolved_value()};
 	if (!is_null_hex(resolver)) {
@@ -2073,7 +2073,7 @@ async function resolve_name_from_input(provider, input) {
 			}
 			let {name} = ret;
 			if (!name) throw new Error(`No name for address`);
-			let node = ens_node_from_name(name);
+			let node = namehash(name);
 			let resolver = await call_registry_resolver(provider, node);
 			return {...ret, node, resolver, [RESOLVED]: resolved_value()};
 		}
@@ -2103,7 +2103,7 @@ async function call_resolver_text(provider, resolver, node, key) {
 	const SIG = '59d1d43c'; // text(bytes32,string)
 	try {
 		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node).string(key))).string();
-	} catch (err) {
+	} catch (cause) {
 		throw new Error(`Invalid response from resolver for text: ${key}`, {cause});
 	}
 }
@@ -2112,7 +2112,7 @@ async function call_resolver_addr_for_type(provider, resolver, node, type) {
 	const SIG = 'f1cb7e06'; // addr(bytes32,uint256);
 	try {
 		return ABIDecoder.from_hex(await call(provider, resolver, ABIEncoder.method(SIG).add_hex(node).number(type))).memory();
-	} catch (err) {
+	} catch (cause) {
 		throw new Error(`Invalid response from resolver for addr of type: 0x${type.toString(16).padStart(4, '0')}`, {cause});
 	}
 }
@@ -2240,4 +2240,4 @@ class FetchProvider {
 	}
 }
 
-export { ABIDecoder, ABIEncoder, ADDR_TYPES, FetchProvider, base58_from_bytes, bytes_from_hex, bytes_from_str, checksum_address, ens_addr_record, ens_address_from_name, ens_avatar, ens_contenthash_record, ens_name_from_address, ens_node_from_name, ens_normalize, ens_pubkey_record, ens_text_record, get_mapped, hex_from_bytes, idna, is_combining_mark, is_disallowed, is_ignored, is_null_hex, is_valid_address, keccak, namehash, number_from_abi, sha3, shake, smol_provider, str_from_bytes };
+export { ABIDecoder, ABIEncoder, ADDR_TYPES, FetchProvider, base58_from_bytes, bytes_from_hex, bytes_from_str, checksum_address, ens_addr_record, ens_address_from_name, ens_address_from_node, ens_avatar, ens_contenthash_record, ens_name_from_address, namehash as ens_node_from_name, ens_normalize, ens_pubkey_record, ens_text_record, get_mapped, hex_from_bytes, idna, is_combining_mark, is_disallowed, is_ignored, is_null_hex, is_valid_address, keccak, namehash, number_from_abi, sha3, shake, smol_provider, str_from_bytes };

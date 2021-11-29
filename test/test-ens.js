@@ -1,7 +1,11 @@
-import {ens_address_from_name, ens_avatar, ens_name_from_address, ens_text_record, ens_addr_record, ens_contenthash_record, ens_pubkey_record} from '../ens.js';
+import {ens_address_from_name, ens_avatar, ens_name_from_address,
+	ens_text_record, ens_addr_record, ens_contenthash_record,
+	ens_pubkey_record, ens_node_from_name, ens_address_from_node} from '../ens.js';
 import provider from './cloudflare.js';
 
 let name = 'bRaNTly.eth';
+
+console.log(await ens_address_from_node(provider, ens_node_from_name(name)));
 
 let resolved = await ens_address_from_name(provider, name);
 console.log(resolved);
@@ -16,7 +20,7 @@ console.log(avatar);
 
 console.log(await ens_text_record(provider, resolved, ['email', 'url', 'avatar']));
 
-console.log(await ens_address_record(provider, resolved, ['BTC', 'LTC', 'ETH', 'XLM']));
+console.log(await ens_addr_record(provider, resolved, ['BTC', 2, 'ETH', 'XLM']));
 
 console.log(await ens_contenthash_record(provider, resolved));
 
