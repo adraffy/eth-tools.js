@@ -4,6 +4,8 @@ Compact set of ES6 tools for Ethereum dapps that work in the browser.
 * `dist/eth-tools.js` contains everything.
 * `dist/eth-abi.js` contains everything except ENS support.
 
+Demos: [ENS Resolver](https://raffy.antistupid.com/eth/ens-resolver.html) • [ENS Avatar](https://raffy.antistupid.com/eth/ens-avatar.html) • [ENS Records](https://raffy.antistupid.com/eth/ens-records.html)
+
 ```Javascript
 import * as tools from '@adraffy/eth-tools';
 // browser:

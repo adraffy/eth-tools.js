@@ -9,6 +9,12 @@ export {ADDR_TYPES}; // note: this is mutable
 // warning: this does not normalize
 export {ens_node_from_name};
 
+/*
+export function ens_labelhash(s) {
+	return keccak().update(s).hex;
+}
+*/
+
 // https://docs.ens.domains/ens-deployments
 const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e'; // ens registry contract on mainnet
 const RESOLVED = Symbol('ENSResolved');
