@@ -1,18 +1,10 @@
-import {keccak, hex_from_bytes} from '@adraffy/keccak';
+import {keccak} from '@adraffy/keccak';
 
-// expects a string
-// returns 64-char hex-string, no 0x-prefix
-// https://eips.ethereum.org/EIPS/eip-137#name-syntax
-export function namehash(name) {
-	if (typeof name !== 'string') throw new TypeError('Expected string');
-	let buf = new Uint8Array(64); 
-	if (name.length > 0) {
-		for (let label of name.split('.').reverse()) {
-			buf.set(keccak().update(label).bytes, 32);
-			buf.set(keccak().update(buf).bytes, 0);
-		}
-	}
-	return hex_from_bytes(buf.subarray(0, 32));
+export function compare_arrays(a, b) {
+	let {length: n} = a;
+	let c = n - b.length;
+	for (let i = 0; c == 0 && i < n; i++) c = a[i] - b[i];
+	return c;
 }
 
 // accepts address as string (0x-prefix is optional) 
@@ -34,6 +26,8 @@ export function is_valid_address(s) {
 export function is_null_hex(s) {
 	return /^(0x)?[0]+$/i.test(s);
 }
+
+export const NULL_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 export function is_multihash(s) {
 	try {

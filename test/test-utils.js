@@ -1,18 +1,21 @@
-import {bytes_from_str} from '@adraffy/keccak';
-import {checksum_address, base58_from_bytes, is_null_hex} from '../utils.js';
+import {checksum_address, is_null_hex} from '../utils.js';
 
 let ADDRESSES = [
-	['0xfb6916095ca1df60bb79ce92ce3ea74c37c5d359', '0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359']
+	'0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359',
+	'0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e',
+	'0xaB528d626EC275E3faD363fF1393A41F581c5897'
 ];
 
-for (let [input, address0] of ADDRESSES) {
-	let address = checksum_address(input);
-	if (address !== address0) {
-		console.log({input, address, address0});
-		throw new Error(`mismatch: ${input}`);
+for (let a0 of ADDRESSES) {
+	let a1 = checksum_address(a0.toLowerCase());
+	if (a0 !== a1) {
+		console.log({a0, a1});
+		throw new Error(`wtf`);
 	}
 }
 
 if (!is_null_hex('0x00000000000000000000000000000000')) throw new Error('wtf');
+if (!is_null_hex('0x0')) throw new Error('wtf');
+if (!is_null_hex('0')) throw new Error('wtf');
 
 console.log('OK');

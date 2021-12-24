@@ -26,6 +26,7 @@ export class FetchProvider {
 		}
 		let {error} = json;
 		if (error) {
+			console.log(json);
 			let err = new Error(error.message ?? 'unknown error');
 			err.code = error.code;
 			throw err;

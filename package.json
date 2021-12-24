@@ -1,6 +1,6 @@
 {
   "name": "@adraffy/eth-tools",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "Compact set of ES6 tools for Ethereum dapps that work in the browser",
   "keywords": [
     "ethereum",
@@ -33,8 +33,8 @@
     "dist": "rollup -c && uglifyjs dist/eth-tools.js --mangle --toplevel --output dist/eth-tools.min.js && uglifyjs dist/eth-abi.js --mangle --toplevel --output dist/eth-abi.min.js"
   },
   "dependencies": {
-    "@adraffy/ens-normalize": "^1.0.7",
-    "@adraffy/keccak": "^1.1.5"
+    "@adraffy/ens-normalize": "^1.3.2",
+    "@adraffy/keccak": "^1.2.1"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "^13.0.6"
