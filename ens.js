@@ -1,7 +1,7 @@
 import {ens_normalize} from '@adraffy/ens-normalize';
-import {keccak} from '@adraffy/keccak';
+import {keccak, hex_from_bytes} from '@adraffy/keccak';
 import {eth_call, ABIDecoder, ABIEncoder, Uint256} from './abi.js';
-import {checksum_address, is_null_hex, is_valid_address, NULL_ADDRESS} from './utils.js';
+import {checksum_address, is_null_hex, is_valid_address} from './utils.js';
 import {base58_from_bytes} from './base58.js';
 import ADDR_TYPES from './ens-address-types.js';
 
@@ -187,6 +187,7 @@ export async function parse_avatar(avatar, provider = null, address = false) {
 			}
 			return ret;
 		} else if (part1.startsWith('erc1155:')) {
+			// https://eips.ethereum.org/EIPS/eip-1155
 			let contract = part1.slice(part1.indexOf(':') + 1);
 			if (!is_valid_address(contract)) return  {type: 'invalid', error: 'invalid contract address'};
 			let token;
@@ -204,7 +205,8 @@ export async function parse_avatar(avatar, provider = null, address = false) {
 						!address ? -1 : eth_call(provider, contract, ABIEncoder.method(SIG_balanceOf).addr(address).number(token)).then(x => x.number()),
 						eth_call(provider, contract, ABIEncoder.method(SIG_uri).number(token)).then(x => x.string())
 					]);
-					ret.meta_uri = meta_uri.replace(/{id}/, token.hex); // 1155 standard
+					// The string format of the substituted hexadecimal ID MUST be lowercase alphanumeric: [0-9a-f] with no 0x prefix.
+					ret.meta_uri = meta_uri.replace('{id}', hex_from_bytes(token.bytes)); 
 					if (address) {
 						ret.owned = balance;
 					}

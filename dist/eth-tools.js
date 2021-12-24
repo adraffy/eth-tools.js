@@ -2976,6 +2976,7 @@ async function parse_avatar(avatar, provider = null, address = false) {
 			}
 			return ret;
 		} else if (part1.startsWith('erc1155:')) {
+			// https://eips.ethereum.org/EIPS/eip-1155
 			let contract = part1.slice(part1.indexOf(':') + 1);
 			if (!is_valid_address(contract)) return  {type: 'invalid', error: 'invalid contract address'};
 			let token;
@@ -2993,7 +2994,8 @@ async function parse_avatar(avatar, provider = null, address = false) {
 						!address ? -1 : eth_call(provider, contract, ABIEncoder.method(SIG_balanceOf).addr(address).number(token)).then(x => x.number()),
 						eth_call(provider, contract, ABIEncoder.method(SIG_uri).number(token)).then(x => x.string())
 					]);
-					ret.meta_uri = meta_uri.replace(/{id}/, token.hex); // 1155 standard
+					// The string format of the substituted hexadecimal ID MUST be lowercase alphanumeric: [0-9a-f] with no 0x prefix.
+					ret.meta_uri = meta_uri.replace('{id}', hex_from_bytes(token.bytes)); 
 					if (address) {
 						ret.owned = balance;
 					}
