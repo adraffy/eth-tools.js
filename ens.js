@@ -128,7 +128,7 @@ export async function ens_name_for_address(provider, address) {
 	address = checksum_address(address); // throws
 	let rev_node = node_from_ens_name(`${address.slice(2).toLowerCase()}.addr.reverse`); 
 	let rev_resolver = await call_registry_resolver(provider, rev_node);
-	if (is_null_hex(rev_resolver)) throw new Error('no reverse resolver');
+	if (is_null_hex(rev_resolver)) return; // undefined
 	const SIG = '691f3431'; // name(bytes)
 	return (await eth_call(provider, rev_resolver, ABIEncoder.method(SIG).number(rev_node))).string();
 }
