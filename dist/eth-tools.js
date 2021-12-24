@@ -5,29 +5,25 @@ function keccak(bits = 256) { return new Fixed(bits,        0b1); } // [1]0*1
 function sha3(bits = 256)   { return new Fixed(bits,      0b110); } // [011]0*1
 function shake(bits)        { return new Extended(bits, 0b11111); } // [11111]0*1
 
-// returns Uint8Array from string
-// accepts only string
-function bytes_from_str(s) {
-	if (typeof s !== 'string') throw TypeError('expected string');
-	s = unescape(encodeURIComponent(s)); // explode utf16
-	let {length} = s;
-	let v = new Uint8Array(length);
-	for (let i = 0; i < length; i++) {
-		v[i] = s.charCodeAt(i);
-	}
-	return v;
+// returns hex from Uint8Array
+// no 0x-prefix
+function hex_from_bytes(v) {
+	return [...v].map(x => x.toString(16).padStart(2, '0')).join('');
 }
-
 // accepts hex-string, 0x-prefix is optional
 // returns Uint8Array
 function bytes_from_hex(s) {
 	if (typeof s !== 'string') throw TypeError('expected string');
-	let pos = 0;
-	if (s.startsWith('0x')) pos += 2; // skip prefix
-	if (s.length & 1) s = `0${s}`; // zero-pad odd length
-	let len = (s.length - pos) >> 1;
+	if (s.startsWith('0x')) {
+		if (s.length == 2) throw new TypeError('expected digits'); // disallow "0x"
+		s = s.slice(2);
+	}
+	if (s.length & 1) {
+		s = `0${s}`; // zero-pad odd length (rare)
+	}
+	let len = s.length >> 1;
 	let v = new Uint8Array(len);
-	for (let i = 0; i < len; i++) {
+	for (let i = 0, pos = 0; i < len; i++) {
 		let b = parseInt(s.slice(pos, pos += 2), 16);
 		if (Number.isNaN(b)) throw new TypeError('expected hex byte');
 		v[i] = b;
@@ -35,47 +31,27 @@ function bytes_from_hex(s) {
 	return v;
 }
 
-// returns hex from Uint8Array
-// no 0x-prefix
-function hex_from_bytes(v) {
-	return [...v].map(x => x.toString(16).padStart(2, '0')).join('');
-}
-
-// returns str from Uint8Array
-function str_from_bytes(v) {
-	/*
-	let cps = [];
-	let pos = 0;
-	let cp = 0;
-	let need = 0;
-	while (pos < v.length) {
-		let b0 = v[pos++];
-		if (need > 0) {
-			if ((b0 >> 6) != 2) throw new Error('malformed utf8: expected continuation')
-			cp = (cp << 6) | (b0 & 0b111111);
-			if (--need == 0) cps.push(cp);
-			continue;
-		}
-		if (b0 < 0b01111111) {
-			cps.push(b0);
-		} else if (b0 < 0b11011111) {
-			cp = b0 & 0b11111;
-			need = 1;
-		} else if (b0 < 0b11101111) {
-			cp = b0 & 0b1111;
-			need = 2;
-		} else {
-			cp = b0 & 0b111;
-			need = 3;
-		}
+// returns Uint8Array from string
+// accepts only string
+function bytes_from_utf8(s) {
+	if (typeof s !== 'string') throw TypeError('expected string');
+	try {
+		s = unescape(encodeURIComponent(s));
+	} catch (cause) {
+		throw new Error('malformed utf8', {cause});
 	}
-	if (need > 0) throw new RangeError('malformed utf8: expected more bytes');
-	return String.fromCodePoint(...ret);
-	*/
+	let {length} = s;
+	let v = new Uint8Array(length);
+	for (let i = 0; i < length; i++) {
+		v[i] = s.charCodeAt(i);
+	}
+	return v;
+}
+function utf8_from_bytes(v) {
 	try {
 		return decodeURIComponent(escape(String.fromCharCode(...v)));
-	} catch (err) {
-		throw new Error('malformed utf8');
+	} catch (cause) {
+		throw new Error('malformed utf8', {cause});
 	}
 }
 
@@ -101,7 +77,7 @@ class KeccakHasher {
 			} else if (Array.isArray(v)) { 
 				v = Uint8Array.from(v);
 			} else if (typeof v === 'string') {
-				v = bytes_from_str(v);
+				v = bytes_from_utf8(v);
 			} else {
 				throw new TypeError('expected bytes');
 			}
@@ -156,7 +132,7 @@ class KeccakHasher {
 	finalize() {
 		let {sponge, suffix, ragged_shift, block_index, block_count} = this;
 		if (ragged_shift) {
-			if (ragged_shift == -1) return this; // already finalized, chainable
+			if (ragged_shift == -1) return; // already finalized
 			suffix = this.ragged_block | (suffix << ragged_shift);
 		}
 		sponge[block_index] ^= suffix;
@@ -201,10 +177,10 @@ class Fixed extends KeccakHasher {
 	get hex() { return hex_from_bytes(this.bytes); }
  	get bytes() {
 		this.finalize();
-		let {size, sponge: state} = this;
+		let {size, sponge} = this;
 		let v = new Int32Array(size);
 		for (let i = 0; i < size; i++) {
-			v[i] = state[i];
+			v[i] = sponge[i];
 		}		
 		return new Uint8Array(v.buffer);
 	}
@@ -395,19 +371,11 @@ function permute32(s) {
 	}
 }
 
-// expects a string
-// returns 64-char hex-string, no 0x-prefix
-// https://eips.ethereum.org/EIPS/eip-137#name-syntax
-function namehash(name) {
-	if (typeof name !== 'string') throw new TypeError('Expected string');
-	let buf = new Uint8Array(64); 
-	if (name.length > 0) {
-		for (let label of name.split('.').reverse()) {
-			buf.set(keccak().update(label).bytes, 32);
-			buf.set(keccak().update(buf).bytes, 0);
-		}
-	}
-	return hex_from_bytes(buf.subarray(0, 32));
+function compare_arrays(a, b) {
+	let {length: n} = a;
+	let c = n - b.length;
+	for (let i = 0; c == 0 && i < n; i++) c = a[i] - b[i];
+	return c;
 }
 
 // accepts address as string (0x-prefix is optional) 
@@ -430,6 +398,8 @@ function is_null_hex(s) {
 	return /^(0x)?[0]+$/i.test(s);
 }
 
+const NULL_ADDRESS = '0x0000000000000000000000000000000000000000';
+
 function is_multihash(s) {
 	try {
 		let v = bytes_from_base58(s);
@@ -439,40 +409,184 @@ function is_multihash(s) {
 	}
 }
 
-// https://docs.soliditylang.org/en/latest/abi-spec.html
+class Uint256 {
+	static zero() {
+		return new this(new Uint8Array(32));
+	}
+	static from_number(i) {
+		return this.zero().set_number(i);
+	}
+	static from_bytes(v) { 
+		return new this(left_truncate_bytes(v, 32));
+	}
+	static from_hex(s) {
+		return this.from_bytes(bytes_from_hex(s));
+	}
+	static from_dec(s) {
+		if (!/^[0-9]+$/.test(s)) throw new TypeError('expected decimal digits');
+		let n = s.length;
+		if (n < 10) this.from_number(parseInt(s, 10));
+		let v = new Uint8Array(Math.max(32, n));
+		let w = 0;
+		for (let i = 0; i < n; i++) {
+			let carry = s.charCodeAt(i) - 0x30;
+			for (let i = 0; i < w; i++) {
+				carry += v[i] * 10;
+				v[i] = carry;
+				carry >>= 8;
+			}
+			while (carry > 0) {
+				v[w++] = carry;
+				carry >>= 8;
+			}
+		}
+		for (let a = Math.min(w, 15); a >= 0; a--) {
+			let b = 31 - a;
+			let temp = v[a];
+			v[a] = v[b];
+			v[b] = temp;
+		}
+		return new this(v.slice(0, 32));
+	}
+	static from_str(s) { // this works like parseInt
+		return s.startsWith('0x') ? this.from_hex(s) : this.from_dec(s);
+	}
+	constructor(v) {
+		if (!(v instanceof Uint8Array)) throw new TypeError('expected bytes');
+		if (v.length != 32) throw new TypeError('expected 32 bytes');
+		this.bytes = v;
+	}
+	compare(v) {
+		if (!(v instanceof Uint256)) throw new TypeError('expected Uint256');
+		return compare_arrays(this.bytes, v.bytes);	
+	}
+	set_number(i) {
+		set_bytes_to_unsigned(this.bytes, i);
+		return this;
+	}
+	get number() {
+		return unsigned_from_bytes(this.bytes);
+	}
+	get hex() {
+		return '0x' + hex_from_bytes(this.bytes);
+	}
+	get dec() {
+		let digits = [0];
+		for (let x of this.bytes) {
+			for (let i = 0; i < digits.length; ++i) {
+				let xx = (digits[i] << 8) | x;
+				digits[i] = xx % 10;
+				x = (xx / 10) | 0;
+			}
+			while (x > 0) {
+				digits.push(x % 10);
+				x = (x / 10) | 0;
+			}
+		}
+		return String.fromCharCode(...digits.reverse().map(x => 0x30 + x));
+	}
+	toJSON() {
+		return this.hex;
+	}
+	toString() {
+		return `Uint256(${this.hex})`;
+	}
+}
+
+function unsigned_from_bytes(v) {
+	if (v.length > 7) {  // 53 bits => 7 bytes, so everything else must be 0
+		let n = v.length - 7;
+		for (let i = 0; i < n; i++) if (v[i] > 0) throw new RangeError('overflow');
+		v = v.subarray(n);
+	}
+	let n = 0;
+	for (let i of v) n = (n * 256) + i;
+	if (!Number.isSafeInteger(n)) throw new RangeError('overflow');
+	return n;
+}
+
+function set_bytes_to_unsigned(v, i) {
+	if (!Number.isSafeInteger(i)) throw new RangeError('overflow');	
+	if (i < 0) throw new RangeError('underflow'); 	
+	for (let pos = v.length - 1; pos >= 0; pos--) {
+		v[pos] = i;
+		i = Math.floor(i / 256);	
+	}
+}
+
+// return exactly n-bytes
+// this always returns a copy
+function left_truncate_bytes(v, n) {
+	let {length} = v;
+	if (length == n) return v.slice();
+	if (length > n) return v.slice(n - length); // truncate
+	let copy = new Uint8Array(n);
+	copy.set(v, n - length); // zero pad
+	return copy;
+}
+
+// parse an arbitrarily-sized hex/dec integer
+// return null on parse failure
+// return null on overflow
+// return exactly n-bytes
+function bytes_from_digits_or_null(s, n) {
+	try {
+		let v = parse_bytes_from_digits(s);
+		if (v.length > n) return null; // overflow
+		return left_truncate_bytes(v, n)
+	} catch (ignored) {
+		return null;
+	}
+}
+
+function drop_leading_zeros(v) {
+	let {length} = v;
+	let i = 0;
+	while (i < length && v[i] == 0) i++;
+	return v.subarray(i);
+}
+
+function parse_bytes_from_digits(s) {
+	s = s.trim();
+	if (s.startsWith('0x')) return drop_leading_zeros(bytes_from_hex(s));
+	let {length} = s;
+	if (length == 0) throw new Error('expected digits');
+	let n = (length + 1) >> 1;
+	let v = new Uint8Array(n);
+	let w = n;
+	for (let j = 0; j < length; j++) {
+		let carry = s.charCodeAt(j) - 48;
+		if (carry < 0 || carry > 9) throw new Error('expected decimal digits');
+		for (let i = n - 1; i >= w; i--) {
+			carry += v[i] * 10;
+			v[i] = carry;
+			carry >>= 8;
+		}
+		while (carry > 0) {
+			v[--w] = carry;
+			carry >>= 8;
+		}
+	}
+	return v.subarray(w);
+}
 
 // convenience for making an eth_call
 // return an ABIDecoder
 // https://eth.wiki/json-rpc/API#eth_call
+// https://www.jsonrpc.org/specification
+// https://docs.soliditylang.org/en/latest/abi-spec.html
 async function eth_call(provider, tx, enc = null, tag = 'latest') {
 	if (typeof provider !== 'object') throw new TypeError('expected provider');
 	if (typeof tx === 'string') tx = {to: tx};
 	if (enc instanceof ABIEncoder) tx.data = enc.build_hex();
-	return ABIDecoder.from_hex(await provider.request({method: 'eth_call', params:[tx, tag]}));
-}
-
-function number_from_abi(x) {
-	if (typeof x === 'string') {
-		if (/^(0x)?[a-f0-9]{0,12}$/i.test(x)) return parseInt(x, 16); // worth it?
-		x = bytes_from_hex(x);
-	} else if (Array.isArray(x)) {
-		x = Uint8Array.from(x);
-	} else if (ArrayBuffer.isView(x)) {
-		x = new Uint8Array(x.buffer, x.byteOffset, x.byteLength);
-	} else if (x instanceof ArrayBuffer) {
-		x = new Uint8Array(x, 0, x.byteLength);			
-	} else {
-		throw new TypeError('unknown number to byte conversion');
+	try {
+		return ABIDecoder.from_hex(await provider.request({method: 'eth_call', params:[tx, tag]}));
+	} catch (err) {
+		if (err.code == -32000 && err.message === 'execution reverted') {
+			err.reverted = true;
+		}
+		throw err;
 	}
-	if (x.length > 7) {  // 53 bits => 7 bytes, so everything else must be 0
-		let n = x.length - 7;
-		for (let i = 0; i < n; i++) if (x[i] > 0) throw new RangeError('overflow');
-		x = x.subarray(n);
-	}
-	let n = 0;
-	for (let i of x) n = (n * 256) + i;
-	if (!Number.isSafeInteger(n)) throw new RangeError('overflow');
-	return n;
 }
 
 class ABIDecoder {
@@ -485,30 +599,30 @@ class ABIDecoder {
 	read(n) {
 		let {pos, buf} = this;
 		let end = pos + n;
-		if (end > buf.length) throw new Error('overflow');
+		if (end > buf.length) throw new RangeError('buffer overflow');
 		let v = buf.subarray(pos, end);
 		this.pos = end;
 		return v;
 	}
 	byte() {
 		let {pos, buf} = this;
-		if (pos >= buf.length) throw new Error('overflow');
+		if (pos >= buf.length) throw new RangeError('buffer overflow');
 		this.pos = pos + 1;
 		return buf[pos];
 	}
-	big(n = 32) { return BigInt('0x' + hex_from_bytes(this.read(n))); }
 	boolean() { return this.number() > 0; }	
-	number(n = 32) { return number_from_abi(this.read(n)); }
-	string() { return str_from_bytes(this.memory()); }
+	number(n = 32) { return unsigned_from_bytes(this.read(n)); }
+	uint256() { return new Uint256(this.read(32)); }
+	string() { return utf8_from_bytes(this.memory()); }
 	memory() {
 		let pos = this.number();
 		let end = pos + 32;
 		let {buf} = this;
-		if (end > buf.length) throw new RangeError('overflow');
-		let len = number_from_abi(buf.subarray(pos, end));
+		if (end > buf.length) throw new RangeError('buffer overflow');
+		let len = unsigned_from_bytes(buf.subarray(pos, end));
 		pos = end;
 		end += len;
-		if (end > buf.length) throw new RangeError('overflow');
+		if (end > buf.length) throw new RangeError('buffer overflow');
 		return buf.subarray(pos, end);
 	}
 	addr(checksum = true) {
@@ -532,25 +646,6 @@ class ABIDecoder {
 		return acc;
 	}
 }
-
-function set_bytes_to_number(v, i) {
-	if (typeof i === 'number') {
-		if (!Number.isSafeInteger(i)) throw new RangeError('overflow');					
-		for (let pos = v.length - 1; i && pos >= 0; pos--) {
-			v[pos] = i;
-			i = Math.floor(i / 256);	
-		}
-	} else if (i instanceof BigInt) {
-		let s = i.toString(16);
-		let {length} = s;
-		for (let pos = v.length - 1, off = length; pos >= 0 && off > 0; pos--, off -= 2) {
-			v[pos] = parseInt(s.slice(Math.max(0, off - 2), off), 16);
-		}
-	} else {
-		throw new TypeError(`unknown integer: ${i}`);
-	}
-}
-
 class ABIEncoder {
 	static method(method) {
 		if (typeof method !== 'string') throw new TypeError('expected string');
@@ -585,7 +680,7 @@ class ABIEncoder {
 			this.alloc(len);
 			let {buf} = this;
 			for (let [off, v] of tails) {
-				set_bytes_to_number(buf.subarray(off, off + 32), pos - offset); // global offset
+				set_bytes_to_unsigned(buf.subarray(off, off + 32), pos - offset); // global offset
 				buf.set(v, pos);
 				pos += v.length;
 			}
@@ -605,27 +700,30 @@ class ABIEncoder {
 		this.pos = end;
 		return buf.subarray(pos, end);
 	}
-	big(i, n = 32) {
-		let v = bytes_from_hex(i.toString(16));
-		if (v.length > n) v = v.subarray(v.length - n);
-		this.alloc(n).set(v, n - v.length);
-		return this; // chainable
-	}
 	bytes_hex(s) { return this.bytes(bytes_from_hex(s)); }
 	bytes(v) { 
 		this.alloc((v.length + 31) & ~31).set(v);		
 		return this; // chainable
 	}
 	number(i, n = 32) {
-		set_bytes_to_number(this.alloc(n), i);
+		if (i instanceof Uint256) {
+			let buf = this.alloc(n);
+			if (n < 32) {
+				buf.set(i.bytes.subarray(32 - n));
+			} else {
+				buf.set(i.bytes, n - 32);
+			}
+		} else {
+			set_bytes_to_unsigned(this.alloc(n), i);
+		}
 		return this; // chainable
 	}
-	string(s) { return this.memory(bytes_from_str(s)); } // chainable
+	string(s) { return this.memory(bytes_from_utf8(s)); } // chainable
 	memory(v) {
 		let {pos} = this; // remember offset
 		this.alloc(32); // reserve spot
 		let tail = new Uint8Array((v.length + 63) & ~31); // len + bytes + 0* [padded]
-		set_bytes_to_number(tail.subarray(0, 32), v.length);
+		set_bytes_to_unsigned(tail.subarray(0, 32), v.length);
 		tail.set(v, 32);
 		this.tails.push([pos, tail]);
 		return this; // chainable
@@ -644,8 +742,6 @@ class ABIEncoder {
 				v = new Uint8Array(v);
 			} else if (Array.isArray(v)) { 
 				v = Uint8Array.from(v);
-			} else if (typeof v === 'string') {
-				v = bytes_from_str(v);
 			} else {
 				throw new TypeError('expected bytes');
 			}
@@ -686,7 +782,7 @@ function bytes_from_base58$1(s) {
 	if (typeof s !== 'string') throw new TypeError('expected string');
 	let v = new Uint8Array(s.length);
 	let zeros = 0;
-    let n = 0;
+	let n = 0;
 	for (let c of s) {
 		let carry = BASE_58.indexOf(c);
 		if (carry < 0) throw new TypeError('expected base58 string');
@@ -745,11 +841,125 @@ class FetchProvider {
 		}
 		let {error} = json;
 		if (error) {
+			console.log(json);
 			let err = new Error(error.message ?? 'unknown error');
 			err.code = error.code;
 			throw err;
 		}
 		return json.result;
+	}
+}
+
+class WebSocketProvider {
+	constructor({url, chain_id, WebSocket: ws_api, request_timeout = 10000, idle_timeout = 500}) {
+		if (typeof url !== 'string') throw new TypeError('expected url');
+		if (!ws_api) ws_api = globalThis.WebSocket;
+		if (!ws_api) throw new Error('unknown WebSocket implementation');
+		this.url = url;
+		this.ws_api = ws_api;
+		this.chain_id = chain_id;
+		this.request_timeout = request_timeout;
+		this.idle_timeout = idle_timeout;
+		this.idle_timer = undefined;
+		this.ws = undefined;
+		this.reqs = undefined;
+		this.id = 0;
+	}
+	get chainId() { return this.chain_id; }
+	restart_idle() {
+		if (this.idle_timeout > 0) {
+			if (Object.keys(this.reqs).length == 0) {
+				let {ws} = this; // snapshot
+				this.idle_timer = setTimeout(() => {
+					//console.log('Disconnect: idle');
+					ws.close();	
+				}, this.idle_timeout);
+			} else {
+				clearTimeout(this.idle_timer);
+			}
+		}
+	}
+	async request(obj) {
+		if (typeof obj !== 'object') throw new TypeError('expected object');
+		await this.connect();
+		const id = ++this.id; 
+		const {reqs, ws} = this; // snapshot
+		this.restart_idle();
+		return new Promise((ful, rej) => {
+			let timer = setTimeout(() => {
+				delete reqs[id];
+				rej(new Error('Timeout'));
+			}, this.request_timeout);
+			reqs[id] = {timer, ful, rej};
+			ws.send(JSON.stringify({jsonrpc: '2.0', id, ...obj}));
+		});
+	}
+	async connect() {
+		let {ws} = this;
+		if (ws === undefined) {
+			let queue = this.ws = []; // change state		 
+			let s = new this.ws_api(this.url);
+			//console.log('Connecting...');
+			let timer, handler;
+			try {  
+				await new Promise((ful, rej) => {
+					handler = () => {
+						s.removeEventListener('error', rej); 
+						s.removeEventListener('close', rej);
+						ful();						
+					};
+					timer = setTimeout(() => rej(new Error('Timeout')), this.request_timeout);
+					s.addEventListener('close', rej);
+					s.addEventListener('error', rej);
+					s.addEventListener('open', handler, {once: true});
+				});
+			} catch (err) {
+				//console.log(`Connect error: ${err}`);
+				this.ws = undefined; // reset state
+				s.removeEventListener('open', handler);
+				for (let {rej} of queue) rej(err);
+				s.close();
+				throw err;
+			} finally {
+				clearTimeout(timer);
+			} 
+			//console.log('Connected');
+			this.ws = s; // connected state
+			this.id = 0;
+			this.reqs = {};
+			// setup error handlers
+			let die = (err) => {
+				if (s !== this.ws) return;
+				this.ws = undefined; // reset state
+				for (let {rej} of Object.values(this.reqs)) rej(err);
+				this.reqs = undefined;
+				clearTimeout(this.idle_timer);
+			};
+			s.addEventListener('close', () => die(new Error('Unexpected close')));
+			s.addEventListener('error', die);
+			// process waiters
+			for (let {ful} of queue) ful();
+			// handle requests
+			let {reqs} = this; // snapshot
+			s.addEventListener('message', ({data}) => {
+				let json = JSON.parse(data);
+				let request = reqs[json.id];
+				if (!request) return;
+				this.restart_idle();
+				delete reqs[json.id];
+				clearTimeout(request.timer);
+				let {result, error} = json;
+				if (result) return request.ful(result);
+				let err = new Error(error?.message ?? 'Unknown Error');
+				if ('code' in error) err.code = error.code;
+				request.rej(err);
+			});
+			this.restart_idle();
+		} else if (Array.isArray(ws)) { // already connecting
+			await new Promise((ful, rej) => {
+				ws.push({ful, rej});
+			});
+		}
 	}
 }
 
@@ -762,8 +972,7 @@ function retry(provider, retry = 2, delay = 1000) {
 			try {
 				return await provider.request(args);
 			} catch (err) {
-				if (err.code === -32000 && n++ < retry) { 
-					// "header not found"
+				if (err.code === -32000 && err.message === 'header not found' && n++ < retry) { 
 					// this seems to be an geth bug (infura, cloudflare, metamask)
 					await new Promise(ful => setTimeout(ful, delay));
 					continue;
@@ -779,357 +988,937 @@ function retry(provider, retry = 2, delay = 1000) {
 	});
 }
 
-class TableReader {
-	constructor(table) {
-		this.table = table;
-		this.pos = 0;
+function decode_arithmetic(bytes) {
+	let pos = 0;
+	function u16() { return (bytes[pos++] << 8) | bytes[pos++]; }
+	
+	// decode the frequency table
+	let symbol_count = u16();
+	let total = 1;
+	let acc = [0, 1]; // first symbol has frequency 1
+	for (let i = 1; i < symbol_count; i++) {
+		acc.push(total += u16());
 	}
-	get more() {
-		return this.pos < this.table.length;
-	}
-	read_byte() { return this.table[this.pos++]; }
-	read() { // unsigned pseudo-huffman (note: assumes tables are valid)
-		let {table, pos} = this;
-		let x0 = table[pos];
-		if (x0 < 0x80) {
-			this.pos += 1;
-			return x0;
-		}
-		if (x0 < 0xFF) {
-			this.pos += 2;
-			return 0x80 + (((x0 & 0x7F) << 8) | table[pos+1]);
-		}
-		this.pos += 4;
-		return 0x7F80 + ((table[pos+1] << 16) | (table[pos+2] << 8) | table[pos+3]);
-	}
-	read_signed() { // eg. [0,1,2,3...] => [0,-1,1,-2,...]
-		let i = this.read();		
-		return (i & 1) ? (~i >> 1) : (i >> 1);
-	}
-}
 
+	// skip the sized-payload that the last 3 symbols index into
+	let skip = u16();
+	let pos_payload = pos;
+	pos += skip;
 
-// from coder-v2.js
-function bytes_from_base64(s) {
-	return Uint8Array.from(atob(s), c => c.charCodeAt(0));
-}
-function decode2(v) {
-	let buf = 0;
-	let n = 0;
-	let ret = [];
-	next: for (let x of v) {
-		buf = (buf << 8) | x;
-		n += 8;
-		while (n >= 3) {
-			switch ((buf >> (n - 2)) & 3) { // upper 2 bits
-				case 3:
-					if (n < 10) continue next;
-					ret.push((buf >> (n -= 10)) & 255);
-					continue;
-				case 2: 
-					if (n < 6) continue next;
-					ret.push((buf >> (n -= 6)) & 15);
-					continue;
-				default:
-					ret.push((buf >> (n -= 3)) & 3); 
+	let read_width = 0;
+	let read_buffer = 0; 
+	function read_bit() {
+		if (read_width == 0) {
+			// this will read beyond end of buffer
+			// but (undefined|0) => zero pad
+			read_buffer = (read_buffer << 8) | bytes[pos++];
+			read_width = 8;
+		}
+		return (read_buffer >> --read_width) & 1;
+	}
+
+	const N = 31;
+	const FULL = 2**N;
+	const HALF = FULL >>> 1;
+	const QRTR = HALF >> 1;
+	const MASK = FULL - 1;
+
+	// fill register
+	let register = 0;
+	for (let i = 0; i < N; i++) register = (register << 1) | read_bit();
+
+	let symbols = [];
+	let low = 0;
+	let range = FULL; // treat like a float
+	while (true) {
+		let value = Math.floor((((register - low + 1) * total) - 1) / range);
+		let start = 0;
+		let end = symbol_count;
+		while (end - start > 1) { // binary search
+			let mid = (start + end) >>> 1;
+			if (value < acc[mid]) {
+				end = mid;
+			} else {
+				start = mid;
 			}
 		}
+		if (start == 0) break; // first symbol is end mark
+		symbols.push(start);
+		let a = low + Math.floor(range * acc[start]   / total);
+		let b = low + Math.floor(range * acc[start+1] / total) - 1;
+		while (((a ^ b) & HALF) == 0) {
+			register = (register << 1) & MASK | read_bit();
+			a = (a << 1) & MASK;
+			b = (b << 1) & MASK | 1;
+		}
+		while (a & ~b & QRTR) {
+			register = (register & HALF) | ((register << 1) & (MASK >>> 1)) | read_bit();
+			a = (a << 1) ^ HALF;
+			b = ((b ^ HALF) << 1) | HALF | 1;
+		}
+		low = a;
+		range = 1 + b - a;
+	}
+	let offset = symbol_count - 4;
+	return symbols.map(x => { // index into payload
+		switch (x - offset) {
+			case 3: return offset + 0x10100 + ((bytes[pos_payload++] << 16) | (bytes[pos_payload++] << 8) | bytes[pos_payload++]);
+			case 2: return offset + 0x100 + ((bytes[pos_payload++] << 8) | bytes[pos_payload++]);
+			case 1: return offset + bytes[pos_payload++];
+			default: return x - 1;
+		}
+	});
+}	
+
+// returns an iterator which returns the next symbol
+function decode_payload(s) {
+	let values = decode_arithmetic(Uint8Array.from(atob(s), c => c.charCodeAt(0)));
+	let pos = 0;
+	return () => values[pos++];
+}
+
+// eg. [0,1,2,3...] => [0,-1,1,-2,...]
+function signed(i) { 
+	return (i & 1) ? (~i >> 1) : (i >> 1);
+}
+
+function read_counts(n, next) {
+	let v = Array(n);
+	for (let i = 0; i < n; i++) v[i] = 1 + next();
+	return v;
+}
+
+function read_ascending(n, next) {
+	let v = Array(n);
+	for (let i = 0, x = -1; i < n; i++) v[i] = x += 1 + next();
+	return v;
+}
+
+function read_deltas(n, next) {
+	let v = Array(n);
+	for (let i = 0, x = 0; i < n; i++) v[i] = x += signed(next());
+	return v;
+}
+
+// returns [[x, n], ...] s.t. [x,3] == [x,x+1,x+2]
+function read_member_table(next) {
+	let v1 = read_ascending(next(), next);
+	let n = next();
+	let vX = read_ascending(n, next);
+	let vN = read_counts(n, next);
+	return [
+		...v1.map(x => [x, 1]),
+		...vX.map((x, i) => [x, vN[i]])
+	].sort((a, b) => a[0] - b[0]);
+}
+
+// returns array of 
+// [x, ys] => single replacement rule
+// [x, ys, n, dx, dx] => linear map
+function read_mapped_table(next) {
+	let ret = [];
+	while (true) {
+		let w = next();
+		if (w == 0) break;
+		ret.push(read_linear_table(w, next));
+	}
+	while (true) {
+		let w = next() - 1;
+		if (w < 0) break;
+		ret.push(read_replacement_table(w, next));
+	}
+	return ret.flat().sort((a, b) => a[0] - b[0]);
+}
+
+function read_ys_transposed(n, w, next) {
+	if (w == 0) return [];
+	let m = [read_deltas(n, next)];
+	for (let j = 1; j < w; j++) {
+		let v = Array(n);
+		let prev = m[j - 1];
+		for (let i = 0; i < n; i++) {
+			v[i] = prev[i] + signed(next());
+		}
+		m.push(v);
+	}
+	return m;
+}
+
+function read_replacement_table(w, next) { 
+	let n = 1 + next();
+	let vX = read_ascending(n, next);
+	let mY = read_ys_transposed(n, w, next);
+	return vX.map((x, i) => [x, mY.map(v => v[i])])
+}
+
+function read_linear_table(w, next) {
+	let dx = 1 + next();
+	let dy = next();
+	let n = 1 + next();
+	let vX = read_ascending(n, next);
+	let vN = read_counts(n, next);
+	let mY = read_ys_transposed(n, w, next);
+	return vX.map((x, i) => [x, mY.map(v => v[i]), vN[i], dx, dy]);
+}
+
+/*
+export function read_zwj_emoji(next) {
+	let buckets = [];
+	for (let k = next(); k > 0; k--) {
+		let n = 1 + next(); // group size
+		let w = 1 + next(); // group width w/o ZWJ
+		let p = 1 + next(); // bit positions of zwj
+		let z = []; // position of zwj
+		let m = []; // emoji vectors
+		for (let i = 0; i < n; i++) m.push([]);
+		for (let i = 0; i < w; i++) {
+			if (p & (1 << (i - 1))) {
+				w++; // increase width
+				z.push(i); // remember position
+				m.forEach(v => v.push(0x200D)); // insert zwj
+			} else {
+				read_deltas(n, next).forEach((x, i) => m[i].push(x));
+			}
+		}
+		for (let b of z) {
+			let bucket = buckets[b];
+			if (!bucket) buckets[b] = bucket = [];
+			bucket.push(...m);
+		}
+	}
+	return buckets;
+}
+
+export function read_emoji(next, sep) {
+	let ret = {};
+	for (let k = next(); k > 0; k--) {
+		let n = 1 + next(); // group size
+		let w = 1 + next(); // group width w/o sep
+		let p = 1 + next(); // bit positions of sep
+		let z = []; // position of sep
+		let m = []; // emoji vectors
+		for (let i = 0; i < n; i++) m.push([]);
+		for (let i = 0; i < w; i++) {
+			if (p & (1 << (i - 1))) {
+				w++; // increase width
+				z.push(i); // remember position
+				m.forEach(v => v.push(sep)); // insert 
+			} else {
+				read_deltas(n, next).forEach((x, i) => m[i].push(x));
+			}
+		}
+		for (let v of m) {
+			let bucket = ret[v[0]];
+			if (!bucket) bucket = ret[v[0]] = [];
+			bucket.push(v.slice(1));
+		}
+	}
+	for (let bucket of Object.values(ret)) {
+		bucket.sort((a, b) => b.length - a.length);
 	}
 	return ret;
 }
+*/
 
-// compressed lookup tables
-// Ignored/Disallowed/Mapped/Valid/Deviation [IdnaMappingTable.txt]
-const TABLE_I = decode2(bytes_from_base64('4DLTwWQnlM7ZPD72dULP/jXsbxDgNvP/jPsgk/+vxPc4DcM='));
-const TABLE_D = decode2(bytes_from_base64('GWo1T41NjWTTmYyFngefm4DGmyZpSTih4DnTt5yZZkmc3oxuSbEcWPAaAcwWdrZbs7WYq844ia5cfp0o8BkJoSWLGclyKlJSUGRGVYymZpEsWM5RRSJlkSbM8hM+I1M0lnFjOUZVUWWjfIrJ5yzQksWM5RlVKSc7kRlWJVIzNmRokppt2SStmRGY3YrLaWcXOIKksyTotFSKqfFizi5qMqpLMk6mRkVRVtpZzMszSYgsaLOJPGDSSp2ZJiTRNUnZnUmO5KiTKcYJOLqUkzKpSZBpBySTJzkhvNuS8BkGTmUrgL1wG0GRTkmRZSZFkJkU5JkV5zkyLQ1kDxqbVlMuCBxx6zPi1OMU4pZaWVZmiyhVTVTTGc1zazPlcujVY+bJLJC8qUteWSY1NW8+WgnHVXNVNcsfzHTXl53SjPHe88nytV0ZXLwPLKZZMplQSSScfWamclszuRTSWysz3NTmxmiwk0PFSWa0piXWTJa8hvyHEWsrOoGiTgNQNq4HN8ZrxXFNC4XPnwG+rIDwHuy5aTKVnE6uximczmczmczmcznfsixo6zZwGrZXn51ZJbHLlZzM5UdUsxDROA/4yHED+GaPN6eA9zFOAzijgNLlRJlxjO3VNnFGjUWTbpXjz041yZCc3puVS2fGMcqmUympnM5zyTflVN1eSWYvJmPQcJwH3LasmnsllsNplJKKO+4hwFc3AdYs2nOQVLFCZVPiBU11RmMikNpJZJJJO/I2o1T41NjUmgnHnMplMm2WZ8RsONHEyjersi3uVyZa9YNrOX5dwCx15jfjkmSU49LlcuPHJZLsq4DHlVNkkmSSZRRmldhvM5RrN5nK0PgO3pxaqjGJjlRp0WZE5YUysXOkUU5hiZUuQvG5ToGcSYosyKloLOOpyVT0z6BkGTyWU5s8dWNy41PJZPqGk5vmduZz5dRVwHTY+cqLS07KKMqxbGsmxzFMXp06TJKc+MtuMz1TZqcSoyenYDileJHLNBnJMhvNc2dy1TSGhJYsZyjKakk0ZjLOp3LwFeuGXHtIoq4DJs2WTZFotdU1uJ51NVm2Nq+TF+AznPNk1OyhFUFHHilZTVo1Cy5V43pFGp26TwHD0nLTdVjryBYsbtJnKOWMlGmiqaYo5KUZp6uA7bGeAzc35lbweN7Nt5lr4DROJ8zY7eD6/j9R4Hx+hznge5nx81SaiapseU1WjVVGc4rLifBZhrey6XJnM+I6BLWruX3ijhNWyqnotnkM5R4Do8teIyUcDZxHCbXLa6Z6lRyPuZcsXp3TPOA3arJ1pVG4Yro3AY1ilmr04zwE+qnRykUlIbCTOdBMioM5xwyGUlzngPUXAdIuCz6+U38H6GP8BsM5xFTlGXgNVy13KqRcB4GP4jnUp4TYJzIUbzwGirEMp0ySqRcFyOiaZnvAaFIcbKJRNRkJJmMhJJLKJRJJJJKJUhnMhkJNRxGVmU4jmi4Djssk2Sy9Xm85LisuNcBJnGO25ZJTOrpuAxrg9YlxB2vdLNZnskN9kmcUVTZRRjyWncB6llylcrnpx11yzVVTUUT08BiZzfJauD4b/xk+wZBx/cz8Bry5ZXc52PF8/tBrPAZUc/OvnXuF2LkvL/+rbs14DcP/W/ch'));
-const TABLE_N = decode2(bytes_from_base64('0HGuA0LZcX4DfjPmHBZS+E+qbEaDTkmovgLxiHA5UMgz/gOBybgfi47IZuc57iMSyvhe/T1rc6Og6vInw2LaI+CxOeTFKnnnAeTR3GwUTZBVRkFFGQUTZBjVGgcBwk3e+vNVPZJu3AY3JxWlcF09PFd7puNbAMaHDctmHr49wnDvtfZE3Ae0XwHpmqYYrwGYYpLtc71jgNcfAZG5cS3abvv4klyhTYoJLv3/HUO6x3zvkfN08FzUnp/FwGl1e/m8+NbFNjQyqb4NSklyhTYpW+/0kTcB7RfAemapnNwGYKaxTWJ2WSc/3XB8nlH/nRew4CjJOA+DgMcr4D/jfjBnyDgejf/niNl4TR8z/88twHF7bkHL8B6oyD/xlfgfLkGNf+tc30Y0BjQE4OJYgMavGNC2TGjRUJMjc9xrxAY1joxoOSZUWGfEjjWRuSYy1Sz4ocayMY0BjQGNAY0BjQGNAY0BjQGNAY0BjQGNCTEeGyAz5IcRyNTZNPiOSmfJDiORqbJp8RyUz5IcRyNTZNPiOSmfJDiORqbJp8RyUz5IcRyNTZNXVw3TioCoCoCochwGRf+9S2ThNok/96NnuOSDXWsdY4JY1xei8Vk1Ww8='));
-const TABLE_W = [decode2(bytes_from_base64('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')), decode2(bytes_from_base64('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')), decode2(bytes_from_base64('4DPNi7/pu/58y9/03f9GV3/Rd/z/HZzz2+cAceWzcA8e5DO+g+QBzAcBtXfnHbsarpy7FeAt7/pu/5k19/03f8qr+/6bv+hJ7/pO/6Evv+m7/nTL3/Sd/zpff9F3/Ok9/0Hf86Z+/6bv+bJ7/nu/5s09/03f8uae/6Lv+XMvf893/Lk9/zXf8vJsQEmNYyJcex0TgCTGsZEuPY6Ltx7/qO/6HgMk8PcAHMBx/QeF/dGO7zs5/8admB/8adlo/8adlx/8adlq/8adli/8ab4uNYqqsQx/NPf/zgM0yFcBbwGPbGc1m4DFHwGI8BiW5nHeAyTNztNvAWPe+AVh4C3gLspWv51sU/AYvuWIya7wGLcBKa9w0E5bwGJZ7Joe4bGa9w1U37xwEsuVYrUbtV0BY1q23vINJ3ibK8oxR5jjtxsybTTlmZbmdC0TgJzoWjbys6x7RVlWWamck0LITj+hYisp3PgLjjOa4wcexrd6NqzDZTm2YZCaeAn4DInfluoSYzq9Vfwdaf/Gw8kf/Gw8eP/Gw8gf/Gw8ev/Gw8cf/Gw8fJ/42HjD/42Hj5v/Gw8Uf/Gw8fR/42HiD/42Hj6v/Gw8Mf/Gw8fZ/42HhD/42Hj7v/Gw8Ef/Gw8fiH/jYeAP/jYeNf/jYeSP/jYeNP/jYeQP/jYeNH/jYeOP/jYeNX/jYeMP/jYeNk/8bDxR/8bDkOIY60cikxvEt1OyYlud+wPFqTLkhxmnJDkqyQ14vkleMjdTsWKbqtyk3U7sNzOwYpua3CTczunheh4Xhu+rHTjE2OmzEsdORZDNkuITXuyeYqSV0CWXEvC77wvPOL+F9HhefVu5/8aX9R/8aX84/8aX9B/8aX86/8aX8x/8aX88n/jS/kP/jS/nm/8aX8R/8aX89H/jS/gP/jS/nq/8aX7x/8aX89n/jS/cP/jS/nu/8aX7R/8aX8+If+NL9g/+NL+V/+NL+o/+NL+U/+NL+g/+NL+Uf+NL+Y/+NL+Vf+NL+Q/+NL+WT/xpfxH/xpfyzf+NL+A/+NL+Wj/xpfvH/xpfy1f+NL9w/+NL+Wz/xpftH/xpfy3f+NL9g/+NL+OX/xpf1H/xpfxv/xpf0H/xpe914t/40fhKxMZRZlHFb1rNR1DWbOB0XgN8xyY5Dj0hyHIFrmmyZkc1mJcxLmzA5rRlxzXNsxLzbLzLm2Wl5ll5OZZeRmFRznMKDldZN1qNludHK8ky82ZJl5syTMTdkgOR5IDj94OIXg4hkAOQ25gchtzA5DfnhyvIstNmRZabMiByHIgcdxHODkt+XHHb8uON45l5xTHMvOKY4DjeOVHIcZzI4vjAOL4wDi+MUHHcWBxXFqjj+LUG/JcuM+S5cZZsvOVTAnLcwJy3OjXlucGnLwcwy8HMMry4nK8uJWXnLll5zDLycyy/MCMvzo05ijmGY5kRlrOZZblzGYyHMnmJzZgrMcwKzHODLmeZFZnmRWZ50ZTUZzQVSDVSDnNmcHP5M8OfyZ0c9ozg5/Rmxz3Nqjn+bUHOcyqOdrODnOZUHK6c2OT350crtzo5PiOdGvL88NaqIznOiM7zwimo0io3zVGfMc6N82XnLstzA4vjFRtkqM+Zo5hlucGvL8yLkBOX5kVmaJWdHOTnhpzHPDiNFR0OrOjbIDi+M5kcfyAHI6c4M+Z55lOU49wHOHgOfk4DnKOA7nHqv/Gp/P/7xbnsaxI5XjWKHLcaxY5fjWMHMcaxrWeAu4DJ8SPAYxwGU4keAxbgMnxQ8Bi3AZTinPfV/68PNfe8H3vEyT3vJFnAbl73efb2H29aT3e1d3s5Pebh3m2k+ttXrbOT/4Plf+D45Px/98f9k/+Lpv/FzJ8XEvFvJ+qb6n8=')), bytes_from_base64('n9e/5AAAAIB7v4G/pr+lARWADBkAABAaGQAAiBXDBAAAAIh0nG5eVmcBS4ASK2cBAoAiMW8CBE5QgAUED4AogCGAIgSAIXxLCgE5gAQFJAWAHXAKJAGAG3pVeAiAGXweXQQvIRZ4AmdmEoAFDEBYHwEGK2OAMmcKKnGAHlUGLHMWfAUbX3wMBCNpOFYBIzZnRgQBTQpGAwAiSyor7f6RtZ9p08gK/wByJQ8DFh8CwtDCw4ABHmLC5MLTB/8ASqyLADoABgE/ODUSASgvMCsBDB4VGAEnBCoHARUWDAUBAikiAgQngLaAyTo='), bytes_from_base64('sofg0CITgBplDjeAAHlyEQJlgAAEVwoCL3IRL1YBgAd4XS+AEgZvfGN2NwsdVoABcFUDGGMuHkYEK2eAEEsMAholFx+ACAIlUSB6IREZKndgGAMnFjNYIQwCDlUrgAJY4IEhBsLiwsM='), bytes_from_base64('spbg2oAAFzZnRoAZ4HEhBsLiwsOAAQ==')];
-// CheckJoiners [DerivedGeneralCategory.txt]
-const TABLE_M = decode2(bytes_from_base64('4LgNw4Dk5+A4fLSSiidIrzDFcQOyzqZIyZGcexvW686ppOMSGksy5W88oyrGDkObM4kZ6ljrzgmdJOk1LGinnBMsiTZx5M1vOCaCy8UWLTF5wTOknO6ljxzuVsyUnKJc3JnLMk6rWOvOCZyzJOq1jkmbozlmSk1LHXoxkmJNGJLPSp7KNiKprm0pY2SSZFmOKFS1nJKTsmKYvJIy1O5LbCapOCz98HmUmOPHVjy0DIKTlrJ3VZEd2sks4DW5c5qOOo5hj+Yy5fiOTU2PHrc4uzDFOAxhnFZDMU+A0bQOC1DIeL358BadgyDgeqm2lfrqkhqyBaguA5AsyHF5ZDqazLEsaxK05NRjNuWSZfdkh0O6w0LLXmRLSlROUyyrgNsoK87sDwWw4hiGIcHpp4DYjwGKy8NMypZMoch4DJVwPeycC1wGM15jJvTzW/KSlVJltc5z15JdiCyw2PMLqJCtcsmPAZBZismbozpJ0mpKdy8BoGJYudRxTgNrnVONrUsR2q3Zb+A4C/gN1mKUhJXAWzqdnHKsonMlBpry7EOBxWg0alixu3qZkozk6FKUZeA9uTy95lzufg+YJzeeTUTWvMytcj8OXLF+B56VzUUKfHpOAxR8PnebyZlQbji0pv4T0JziKnKMvAcLPwH7nPZOF2CfbZ//r5jNeA3D'));
-// CONTEXTJ [DerivedCombiningClass.txt, DerivedJoiningType.txt]  
-const TABLE_V = bytes_from_base64('iM2AAIAAgACAAIAAgACAAG4BEX1wgACASoA1AYZaAR+AHoIOgGRmAUcBkQz6ByaAGIAPbYC2gHfd0oWHKg86egGADHWANWOAdYAAgH2AAHd1gI6AhAGAIlQTUoEmgIUBUg==');
-const TABLE_LD = decode2(bytes_from_base64('4XoDKSTLJaZysjVGIYlkxVJJKyho4k5ZDSSSVj9bvUhKam0rIdWlRNRNRMiOOlS4lVKlMb+O744xrN2RE/+MQxXM/h82Wgy1F1ScBiJJbKJRxxcB6ORE8DxjOI2PHJFZlxKkKRRKMq/8az2miQ=='));
-const TABLE_RD = decode2(bytes_from_base64('4XoCceNWRos6+TjCqaOIE49juZ6VkOq4zOTIZJcTZU2I2nG+O744xrN2RE/+MQxXMvh86Ykp0mpGaXgMQxLF5uA9LI+B4zFbJMbxLLiZTQZJF/41ntdE'));
-const TABLE_T = decode2(bytes_from_base64('4DLTwPpbhwHJz8Bw+WklFE6RWTl2K4gdlnUyRkyEk49jet151TScYkNJZlyt55RlWMHIM3JMlEhc9Sx050ZJKDiixopZyZFIk2ceTNazkySlSHFFi0xOdFEyUGdVrHjnpsOZFnNyXKzJOq1jpzoozGVYoscWcqSSg4osdOkGdk60VPZRsRVNc2lLGySTm9xlKlrOSUnZpDMUljKkeISWlKY3ngs/fB5k8dWPLHloCM9BVdJy1k7qsiO7ORUmZ8BraRzomcklUTVI5hj+YyZgTKTKcopsWQSJF5wSmS86oS4DGGbTPIZi1wGjaBwPFlLGpcxllm2DIeL358BadgyDgeqk2tfrqkhqyBaguA5AsyHGVKeAxdY1iVpyajGa8ueYFSJZOdDmSSsNBy85mS0pUTlSoPAbcUZD53YHgthxDEMQ4DTzwG8vgeBPAbEeAxWXhpmVLJlDkPAZKuB72TgWuAxmvMZN7ObX5SUqnmMiU5z15JKaM+NizSmqRHX2iVMeAyAujFVnKZyWdy8BodCZOLnVJiZEVwG3STIrG1qtCJW1ElTE7K1IZeA4OkrgOARMh4DEJEpDkFWUTKSg0zJ5daVwOLTmYnUsWU5RW9TMlGcnSEyTwHtrlO7p7bN5c7n4PmDn8monzM4Rk5H3MuWL8D0DpxBT49JwGKPh87zeTMqDccWlN/CehOcRU5Rl4DhZ+A/c57JwuwT7bR/9fL5qce2DgBwG4Q=='));
-// emoji-zwj-sequences.txt
-const ZWNJ_EMOJI = (() => {
-	let r = new TableReader(decode2(bytes_from_base64('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')));
-	let buckets = []; // stored by post-idna length
-	while (r.more) {
-		let n = r.read();       // group size
-		let w = r.read_byte();  // group width
-		let p = r.read();       // bit positions of zwnj
-		let m = [];
-		for (let i = 0; i < n; i++) m.push([]);
-		let b = w;
-		for (let i = 0; i < w; i++) { // signed delta-encoded, transposed
-			if (p & (1 << (i - 1))) {
-				m.forEach(v => v.push(0x200D)); // insert zwnj
-				--b; // discount
-			} else {
-				let y = 0;
-				for (let v of m) v.push(y += r.read_signed());
-			}
-		}
-		let bucket = buckets[b];
-		if (!bucket) buckets[b] = bucket = [];
-		bucket.push(...m);
-	}
-	for (let v of buckets) if (v) v.sort((a, b) => a[0] - b[0]); // store sorted
-	return buckets;
-})();
-
-// upgrade emoji to fully-qualified w/o FEOF
-// expects list of code-points
-// returns list of code-points
-function upgrade_zwnj_emoji(v) {
-	let ret = [];
-	next_cp: for (let i = 0, n = v.length; i < n; i++) {
-		let cp0 = v[i];
-		next_bucket: for (let b = Math.min(n - i, ZWNJ_EMOJI.length); b >= 1; b--) { // only consider emoji that fit
-			let bucket = ZWNJ_EMOJI[b];
-			if (!bucket) continue;
-			next_emoji: for (let emoji of bucket) { // todo: binary search
-				let c = emoji[0] - cp0;
-				if (c < 0) continue;
-				if (c > 0) continue next_bucket;
-				let j = i + 1;
-				for (let k = 1; k < emoji.length; k++) {
-					let cp = emoji[k];
-					if (cp == 0x200D) continue;
-					if (cp != v[j++]) continue next_emoji;
-				}
-				ret.push(emoji); // apply upgrade
-				i += b - 1;
-				continue next_cp;
-			}
-		}
-		ret.push(cp0);
-	}
-	return ret.flat();
+function read_member_function(r) {
+	let table = read_member_table(r);
+	return cp => lookup_member(table, cp);
 }
 
-// member are 1-tuples [unsigned(cp)]
 function lookup_member(table, cp) {
-	let x = 0;
-	let r = new TableReader(table); 
-	while (r.more) {
-		x += r.read();
-		if (x == cp) return true;
-		if (x > cp) break;
-	}
-	return false;
-}
-
-// member are 2-tuples [unsigned(cp), n] 
-function lookup_member_span(table, cp) {
-	let x = 0;
-	let r = new TableReader(table); 
-	while (r.more) {
-		x += r.read();
+	for (let [x, n] of table) {
 		let d = cp - x;
 		if (d < 0) break;
-		let n = r.read();
 		if (d < n) return true;
-		x += n;
 	}
 	return false;
 }
 
-// linear are 3-tuples [unsigned(cp), n, signed(mapped)]
-function lookup_linear(table, cp) {
-	let x = 0, y = 0;
-	let r = new TableReader(table);
-	while (r.more) {
-		x += r.read();
+function lookup_mapped(table, cp) {
+	for (let [x, ys, n, dx, dy] of table) {
 		let d = cp - x;
 		if (d < 0) break;
-		let n = r.read();
-		y += r.read_signed();		
-		if (d < n) return y + d;
-		x += n;
-	}
-}
-
-// mapped are (1+w)-tuples [unsigned(cp), signed(mapped...)]
-function lookup_mapped(table, width, cp) {
-	let x = 0, y = 0;
-	let r = new TableReader(table);
-	while (r.more) {		
-		x += r.read();
-		if (x > cp) break;
-		if (x == cp) {
-			let v = [];
-			for (let j = 0; j < width; j++) {
-				v.push(y += r.read_signed());
-			}
-			return v;
+		if (n > 0) {
+			if (d < dx * n && d % dx == 0) {
+				let r = d / dx;
+				return ys.map(y => y + r * dy);
+			} 
+		} else if (d == 0) {
+			return ys;
 		}
-		for (let j = 0; j < width; j++) {
-			y += r.read_signed();
-		}	
 	}
 }
 
+// my suggested inline ascii-safe unicode escape
+// this is ES6 \u{X} without the \u
+function quote_cp(cp) {
+	return `{${cp.toString(16).padStart(2, '0').toUpperCase()}}`;
+}
+
+function escape_unicode(s) {
+	// printable w/o:
+	// 0x22 " (double-quote)
+	// 0x7F DEL
+	return s.replace(/[^\x20-\x21\x23-\x7E]/gu, x => quote_cp(x.codePointAt(0)));
+	//return s.replace(/[^\.\-a-z0-9]/igu, x => quote_cp(x.codePointAt(0)));
+}
+
+function explode_cp(s) {
+	if (typeof s != 'string') throw new TypeError(`expected string`);	
+	return [...s].map(c => c.codePointAt(0));
+}
+
+// https://datatracker.ietf.org/doc/html/rfc3492
 // adapted from https://github.com/mathiasbynens/punycode.js
-// overflow removed because only used after idna
-// note: not safe to export for general use
-// string -> string
-function puny_decode(input) {
-	let output = [];
-	
-	let index = input.lastIndexOf('-');
-	for (let i = 0; i < index; ++i) {
-		let code = input.charCodeAt(i);
-		if (code >= 0x80) throw new Error('punycode: expected basic');
-		output.push(code);
+// puny format: "xn--{ascii}-{0-9a-z}"
+// this function receives normalized cps such that:
+// * no uppercase 
+// * no overflow (#section-6.4)
+
+function puny_decode(cps) {
+	let ret = [];
+	let pos = cps.lastIndexOf(0x2D); // hyphen
+	for (let i = 0; i < pos; i++) {
+		let cp = cps[i];
+		if (cp >= 0x80) throw new Error('expected ASCII');
+		ret.push(cp);
 	}
-	index++; // skip delimiter
-	
-	// https://datatracker.ietf.org/doc/html/rfc3492#section-3.4
+	pos++; // skip hyphen
+	// #section-5
 	const BASE = 36; 
 	const T_MIN = 1;
 	const T_MAX = 26;
-	const DELTA_SKEW = 38;
-	const DELTA_DAMP = 700;
-	const BASE_MIN = BASE - T_MIN;
-	const MAX_DELTA = (BASE_MIN * T_MAX) >> 1;
-
-	let bias = 72;
-	let n = 0x80;
-
-	let i = 0;
-	const {length} = input;
-	while (index < length) {
+	const SKEW = 38;
+	const DAMP = 700;
+	const MAX_DELTA = (BASE - T_MIN) * T_MAX >> 1;
+	let i = 0, n = 128, bias = 72;
+	while (pos < cps.length) {
 		let prev = i;
 		for (let w = 1, k = BASE; ; k += BASE) {
-			if (index >= length) throw new Error('punycode: invalid');
-			let code = input.charCodeAt(index++);
-			if (code < 0x3A) { // 30 + 0A
-				code -= 0x16;
-			} else if (code < 0x5B) { // 41 + 1A
-				code -= 0x41;
-			} else if (code < 0x7B) { // 61 + 1A
-				code -= 0x61;
+			if (pos >= cps.length) throw new Error(`invalid encoding`);
+			let cp = cps[pos++];
+			if (cp >= 0x30 && cp <= 0x39) { // 0-9
+				cp -= 0x16; // 26 + (code - 0x30)
+			} else if (cp >= 0x61 && cp <= 0x7A) { // a-z
+				cp -= 0x61;
 			} else {
-				throw new Error(`punycode: invalid byte ${code}`);
+				throw new Error(`invalid character ${cp}`);
 			}
-			i += code * w;
+			i += cp * w;
 			const t = k <= bias ? T_MIN : (k >= bias + T_MAX ? T_MAX : k - bias);
-			if (code < t) break;
+			if (cp < t) break;
 			w *= BASE - t;
 		}
-		const out = output.length + 1;
-		let delta = i - prev;
-		delta = prev == 0 ? (delta / DELTA_DAMP)|0 : delta >> 1;
-		delta += (delta / out)|0;
+		let len = ret.length + 1;
+		let delta = prev == 0 ? (i / DAMP)|0 : (i - prev) >> 1;
+		delta += (delta / len)|0;
 		let k = 0;
-		while (delta > MAX_DELTA) {
-			delta = (delta / BASE_MIN)|0;
-			k += BASE;
+		for (; delta > MAX_DELTA; k += BASE) {
+			delta = (delta / (BASE - T_MIN))|0;
 		}
-		bias = (k + BASE * delta / (delta + DELTA_SKEW))|0;
-		n += (i / out)|0;
-		i %= out;
-		output.splice(i++, 0, n);
+		bias = (k + (BASE - T_MIN + 1) * delta / (delta + SKEW))|0;
+		n += (i / len)|0;
+		i %= len;
+		ret.splice(i++, 0, n);
 	}	
-	return String.fromCodePoint(...output);
+	return ret;
 }
 
-// warning: these should not be used directly
-// expects code-point (number)
-// is_* returns boolean
-// get_* returns number, list of numbers, or undefined (code-points)
-function is_disallowed(cp) {
-	return lookup_member_span(TABLE_D, cp);
+// this returns [[]] if empty
+// {e:[],u:[]} => emoji
+// {v:[]} => chars
+function tokenized_idna(cps, emoji_parser, tokenizer) {
+	let chars = [];
+	let tokens = [];
+	let labels = [tokens];
+	function drain() { 
+		if (chars.length > 0) {
+			tokens.push({v: chars}); 
+			chars = [];
+		}
+	}
+	for (let i = 0; i < cps.length; i++) {
+		if (emoji_parser) {
+			let [len, e] = emoji_parser(cps, i);
+			if (len > 0) {
+				drain();
+				tokens.push({e, u:cps.slice(i, i+len)}); // these are emoji tokens
+				i += len - 1;
+				continue;
+			}
+		} 
+		let cp = cps[i];
+		let token = tokenizer(cp);
+		if (Array.isArray(token)) { // this is more characters
+			chars.push(...token);
+		} else {
+			drain();
+			if (token) { // this is a token
+				tokens.push(token);
+			} else { // this is a label separator
+				tokens = []; // create a new label
+				labels.push(tokens);
+			}
+		}
+	}
+	drain();
+	return labels;
 }
-function is_ignored(cp) {
-	return lookup_member_span(TABLE_I, cp);
+
+// returns an emoji parser
+function emoji_parser_factory(r) {	
+	const REGIONAL = read_member_function(r);
+	const KEYCAP_OG = read_member_function(r);
+	const KEYCAP_FIXED = read_member_function(r);
+	const EMOJI_OPT = read_member_function(r);
+	const EMOJI_REQ = read_member_function(r);
+	const MODIFIER = read_member_function(r);
+	const MODIFIER_BASE = read_member_function(r);
+	const TAG_SPEC = read_member_function(r);
+
+	const FE0F = 0xFE0F;
+	const ZWJ = 0x200D;
+	const KEYCAP_END = 0x20E3;
+	const TAG_END = 0xE007F;
+
+	function find_emoji_chr_mod_pre(cps, pos) {
+		let cp = cps[pos];
+		let cp2 = cps[pos+1]; // out of bounds, but unassigned
+		// emoji_modifier_sequence := emoji_modifier_base emoji_modifier
+		let base = MODIFIER_BASE(cp);
+		if (base && cp2 && MODIFIER(cp2)) {
+			return [2, [cp, cp2]];
+		}
+		// emoji_modifier_base is a emoji_character 
+		// emoji_presentation_sequence := emoji_character \x{FE0F}
+		// but some emoji dont need presentation
+		// and previously valid emoji are already registered
+		// we call these emoji optional
+		let opt = base || EMOJI_OPT(cp); 
+		if (cp2 == FE0F) {
+			// these have optional FE0F 
+			if (opt) return [2, [cp]]; // drop FE0F
+			// these require FE0F
+			// these are the new emoji 
+			// all future emoji should be added 
+			// through this mechanism, if appropriate 
+			if (EMOJI_REQ(cp)) return [2, [cp, FE0F]]; // keep FE0F
+		}
+		// emoji_character 
+		// we also allow single regional 
+		if (base || opt || REGIONAL(cp) || MODIFIER(cp)) {
+			return [1, [cp]];	
+		}
+	}
+
+	return function(cps, pos) {
+		let cp = cps[pos];
+		let len = cps.length;
+		// [ED-14] emoji flag sequence
+		// https://www.unicode.org/reports/tr51/#def_emoji_flag_sequence
+		// A sequence of two Regional Indicator characters, where the corresponding ASCII characters are valid region sequences as specified 
+		if (pos+1 < len && REGIONAL(cp)) {
+			// emoji_flag_sequence := regional_indicator regional_indicator
+			let cp2 = cps[pos+1];
+			if (REGIONAL(cp2)) {
+				return [2, [cp, cp2]];
+			}
+		} 
+		// [ED-14c] emoji keycap sequence
+		// https://unicode.org/reports/tr51/#def_emoji_keycap_sequence
+		// A sequence of the following form: 
+		// emoji_keycap_sequence := [0-9#*] \x{FE0F 20E3}
+		let keycap_og = KEYCAP_OG(cp);
+		if (pos+1 < len && keycap_og && cps[pos+1] == KEYCAP_END) {
+			return [2, [cp, KEYCAP_END]];
+		} else if (pos+2 < len && (keycap_og || KEYCAP_FIXED(cp)) && cps[pos+1] == FE0F && cps[pos+2] == KEYCAP_END) {
+			return [3, keycap_og ? [cp, KEYCAP_END] : [cp, FE0F, KEYCAP_END]];		
+		}
+		// [ED-15] emoji core sequence
+		// emoji_core_sequence := emoji_character | emoji_presentation_sequence | emoji_keycap_sequence | emoji_modifier_sequence | emoji_flag_sequence 
+		// [ED-15a] emoji zwj element
+		// emoji_zwj_element := emoji_character | emoji_presentation_sequence | emoji_modifier_sequence
+		// [ED-16] emoji zwj sequence 
+		// emoji_zwj_sequence := emoji_zwj_element ( \x{200d} emoji_zwj_element )+
+		// [ED-17] emoji sequence
+		// emoji_sequence := emoji_core_sequence | emoji_zwj_sequence | emoji_tag_sequence 
+		let emoji0 = find_emoji_chr_mod_pre(cps, pos);
+		if (!emoji0) return [0];
+		let [pos2, stack] = emoji0;
+		pos2 += pos;
+		let zwj = false;
+		while (pos2+1 < len && cps[pos2] === ZWJ) {
+			let emoji = find_emoji_chr_mod_pre(cps, pos2 + 1);
+			if (!emoji) break;
+			zwj = true;
+			pos2 += 1 + emoji[0];
+			stack.push(ZWJ, ...emoji[1]);
+		}
+		if (!zwj) {
+			// [ED-14a] emoji tag sequence (ETS) 
+			// https://www.unicode.org/reports/tr51/#def_emoji_tag_sequence
+			// A sequence of the following form:
+			//  emoji_tag_sequence := tag_base tag_spec tag_end
+			//   tag_base := emoji_character 
+			//             | emoji_modifier_sequence     => emoji_modifier_base emoji_modifier
+			//             | emoji_presentation_sequence => emoji_character \x{FE0F}
+			//   tag_spec := [\x{E0020}-\x{E007E}]+
+			//   tag_end  := \x{E007F}		
+			if (pos2+2 < len && TAG_SPEC(cps[pos2])) {
+				let pos3 = pos2 + 1;
+				while (pos3+1 < len && TAG_SPEC(cps[pos3])) pos3++;
+				if (cps[pos3++] == TAG_END) {
+					// these are crazy dangerous because they don't render
+					// ignore the sequence
+					// return [pos3 - pos, stack.concat(cps.slice(pos2, pos3 - pos2))];
+					return [pos3 - pos, stack];
+				}
+			}
+		}
+		return [pos2 - pos, stack];	};
 }
-function is_combining_mark(cp) {
-    return lookup_member_span(TABLE_M, cp);
-}
-function get_mapped(cp) {
-	let mapped = lookup_linear(TABLE_N, cp);
-	if (mapped) return mapped;
-	for (let i = 0; i < TABLE_W.length; i++) {	
-		mapped = lookup_mapped(TABLE_W[i], i + 1, cp);
-		if (mapped) return mapped;
+
+var PAYLOAD$3 = 'ABIAAQB6AEAAOAAoACYAHwAiABgAFgAOAAsACwAMAY8AfgADApQhCD9xcXFxcXFxcW5hcbsGoY8Bf9URLHl4F4mAXgAn6F1DBPgbACv4ZqZU5nHucWhm/wCYRQRDAJcASQwtAe8FzAOHOfQyBvsC+GifBANGRZDdAC4CJSwCIi8GFTgCJSwmLyQpNix4JTpMcXV+rQEGGggji3raLA6mlfECCAxleXQSxKUjTyElAibgTiIC0gHv1AZQBLNgQ6JNVpJS9wlNAHRfAXiOWADp7D9QqYZpggAHGwscRNcB8gB0/yE9LHw3ZzYcITAjCk8BAlASEDEWAjEMCTgFzVsHDywSYVMEXgVBSgCFDAQFAckCphERETMDM2uMA88yLkEnJgYTLi6LB7kBPw0nVwsQ4gE7YHTHG0MAJpANNxIqJ15uH1IFEQDKAm4FfB2eATAAeIwtpywlOBhEJwRXng4sHLli4Q5IYl7584oYIwciAIlLCW1CAFQULjWxMQNQS/8RUSEBKAMWiQavLFEEUAT7AK0E1WULFc3RYR4GDAkRFRAxEhEDAQEABx8IASgjAAJR4QwFEpUiGzjHDw5ylPEUpACEAX4jBRwWExgAGwkSAkFoCRgIAA5XWI6qYXEEjBQARAEhDhAt2CcBFwASAEoTJBMCNQUSphsCAEEXDnKU8Q4OA70WBRQQHmoJLG5nEwoIDmNYjqphcQSGGgBJASASEDPYKA9QDyQSCgQMShMjAxQGAzUCcRkkAIsAuokwVSwLAmIGPhgnKACLCRkAEicBAQbgO8+xBTABBxcQJgAEQDf6MASDMBD0HwwoDAsu9wDA6hMtcgxWABIITU3k0SHxGPGp8QBhA+dvYj7xAEEFTY2l8Q8x0RWBKEEG8QtKx0dLASBJGLFQ8QBfWx4AFKXRDyrPFXMcIgEPEjzcS9Wn/KALJxnXU2YJOBWKOmP82gdIgmNcRsDi+p7FBLYbwm9Uzs1RfCbNpY30PNDOtZBhbqPBybOPeWa7oi+ySNuja7E79Fz+oJqkWRGdXLqRl46pfoUDu0uKXTiGuFf3GtJzAXtJmxI3V8am/mpQnjfi99U7ZkojTh6fKYexodlCUm8Nn5tkJXqdPwxaQiU29Pa8nQxhFccS0ZzA2p+XNo3r68FBGjQNasxwtQH/0ELiOQLNuyc0YqOxCPnfFsvASXVP7enrn5p48UHDGS6NU/kYR37WSJ7+CN+nV4NqWlRTc/nQOuWoDD2Cnkn26E21fE+79xMXG2voqdtyef5eUY6MOoAAPIvdUDW+i16JSxe2+srXAYVvzbE8SKhyxzjFf2rMlgMycfXR8nl6/xF97xDwBSNLExVnK4YUGbAMpgGeHD0vHVXsIK20HyDdJQ9a5Uhwta5o+Tw/HpthmalqVX7v90SgUzjZaEahH3JPOhT8k+LFPClF+c5gMeKg';
+
+let r$3 = decode_payload(PAYLOAD$3);
+const VIRAMA = read_member_function(r$3);
+const JOIN_T = read_member_function(r$3);
+const JOIN_LD = read_member_function(r$3);
+const JOIN_RD = read_member_function(r$3);
+const SCRIPT_GREEK = read_member_function(r$3);
+const SCRIPT_HEBREW = read_member_function(r$3);
+const SCRIPT_HKH = read_member_function(r$3);
+
+// chunks is a list of textual code-points
+// chunks can be empty and contain empty lists
+function validate_context(cps) {
+	// apply relative checks
+	for (let i = 0, e = cps.length - 1; i <= e; i++) {
+		switch (cps[i]) {
+			case 0x200C: { 
+				// ZERO WIDTH NON-JOINER (ZWNJ)
+				// ContextJ: https://datatracker.ietf.org/doc/html/rfc5892#appendix-A.1	
+				// If Canonical_Combining_Class(Before(cp)) .eq.  Virama Then True;
+				if (i > 0 && VIRAMA(cps[i - 1])) continue;
+				// If RegExpMatch((Joining_Type:{L,D})(Joining_Type:T)*\u200C(Joining_Type:T)*(Joining_Type:{R,D})) Then True;
+				if (i > 0 && i < e) { // there is room on either side
+					let head = i - 1;
+					while (head > 0 && JOIN_T(cps[head])) head--; // T*
+					if (JOIN_LD(cps[head])) { // L or D
+						let tail = i + 1;
+						while (tail < e && JOIN_T(cps[tail])) tail++; // T*
+						if (JOIN_RD(cps[tail])) { // R or D
+							continue;
+						}
+					}
+				}
+				break;
+			}
+			case 0x200D: {
+				// ZERO WIDTH JOINER (ZWJ)
+				// ContextJ: https://datatracker.ietf.org/doc/html/rfc5892#appendix-A.2
+				// If Canonical_Combining_Class(Before(cp)) .eq.  Virama Then True;
+				if (i > 0 && VIRAMA(cps[i-1])) continue;
+				break;
+			}
+			case 0x00B7: {
+				// MIDDLE DOT
+				// ContextO: https://datatracker.ietf.org/doc/html/rfc5892#appendix-A.3
+				// Between 'l' (U+006C) characters only, used to permit the Catalan
+				// character ela geminada to be expressed.
+				if (i > 0 && i < e && cps[i-1] == 0x6C && cps[i+1] == 0x6C) continue; 
+				break;
+			}
+			case 0x0375: {
+				// GREEK LOWER NUMERAL SIGN (KERAIA)
+				// ContextO: https://datatracker.ietf.org/doc/html/rfc5892#appendix-A.4
+				// The script of the following character MUST be Greek.
+				if (i < e && SCRIPT_GREEK(cps[i+1])) continue; 
+				break;
+			}
+			case 0x05F3:
+				// HEBREW PUNCTUATION GERESH
+				// ContextO: https://datatracker.ietf.org/doc/html/rfc5892#appendix-A.5
+				// The script of the preceding character MUST be Hebrew.
+			case 0x05F4: {
+				// HEBREW PUNCTUATION GERSHAYIM
+				// ContextO: https://datatracker.ietf.org/doc/html/rfc5892#appendix-A.6		
+				// The script of the preceding character MUST be Hebrew.
+				if (i > 0 && SCRIPT_HEBREW(cps[i-1])) continue;
+				break;
+			}
+			default: continue;
+		}
+		// the default behavior above is to continue if the context is valid
+		// we only fall-through if no context was matched
+		throw new Error(`No context for "${escape_unicode(String.fromCodePoint(cps[i]))}"`);
+	}
+	// apply global checks
+	//
+	// ARABIC-INDIC DIGITS
+	// ContextO: https://datatracker.ietf.org/doc/html/rfc5892#appendix-A.8
+	// Can not be mixed with Extended Arabic-Indic Digits.
+	// For All Characters: If cp .in. 06F0..06F9 Then False; End For;
+	// EXTENDED ARABIC-INDIC DIGITS
+	// ContextO: https://datatracker.ietf.org/doc/html/rfc5892#appendix-A.9
+	// Can not be mixed with Arabic-Indic Digits.
+	// For All Characters: If cp .in. 0660..0669 Then False; End For
+	if (cps.some(cp => cp >= 0x0660 && cp <= 0x0669) && cps.some(cp => cp >= 0x06F0 && cp <= 0x06F9)) {
+		throw new Error(`Disallowed arabic-indic digit mixture`);
+	}
+	// KATAKANA MIDDLE DOT
+	// ContextO: https://datatracker.ietf.org/doc/html/rfc5892#appendix-A.7
+	// The effect of this rule is to require at least one character in the label to be in one of those scripts.
+	// For All Characters: If Script(cp) .in. {Hiragana, Katakana, Han} Then True; End For;
+	if (cps.includes(0x30FB) && !cps.some(cp => SCRIPT_HKH(cp))) {
+		throw new Error(`Disallowed katakana`);
 	}
 }
 
-// expects a string 
-// throws TypeError if not a string
-// returns a string normalized according to IDNA 2008, according to UTS-46 (v14.0.0), +CONTEXTJ, +ZWJ EMOJI
-function idna(s, ignore_disallowed = false) {
-	if (typeof s !== 'string') throw new TypeError('expected string');
-	let v =  [...s].map(x => x.codePointAt(0)); // convert to code-points
-	const empty = [];
-	return String.fromCodePoint(...upgrade_zwnj_emoji(v.map((cp, i) => {
-		if (is_disallowed(cp)) {
-			if (ignore_disallowed) return empty;
-			throw new Error(`disallowed: 0x${cp.toString(16).padStart(2, '0')}`);
+var PAYLOAD$2 = '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';
+
+let r$2 = decode_payload(PAYLOAD$2);
+const COMBINING_RANK = Array(1 + r$2()).fill().map(() => read_member_table(r$2));
+const DECOMP = read_mapped_table(r$2);
+const COMP_EXCLUSIONS = read_member_table(r$2);
+
+// algorithmic hangul
+// https://www.unicode.org/versions/Unicode14.0.0/ch03.pdf
+const S0 = 0xAC00;
+const L0 = 0x1100;
+const V0 = 0x1161;
+const T0 = 0x11A7;
+const L_COUNT = 19;
+const V_COUNT = 21;
+const T_COUNT = 28;
+const N_COUNT = V_COUNT * T_COUNT;
+const S_COUNT = L_COUNT * N_COUNT;
+const S1 = S0 + S_COUNT;
+const L1 = L0 + L_COUNT;
+const V1 = V0 + V_COUNT;
+const T1 = T0 + T_COUNT;
+
+function is_hangul(cp) {
+	return cp >= S0 && cp < S1;
+}
+function decompose(cp, next) {
+	if (cp < 0x80) {
+		next(cp);
+	} else if (is_hangul(cp)) {
+		let s_index = cp - S0;
+		let l_index = s_index / N_COUNT | 0;
+		let v_index = (s_index % N_COUNT) / T_COUNT | 0;
+		let t_index = s_index % T_COUNT;
+		next(L0 + l_index);
+		next(V0 + v_index);
+		if (t_index > 0) next(T0 + t_index);
+	} else {
+		let mapped = lookup_mapped(DECOMP, cp);
+		if (mapped) {
+			for (let cp of mapped) {
+				decompose(cp, next);
+			}
+		} else {
+			next(cp);
 		}
-		if (is_ignored(cp)) return empty;
-		if (cp === 0x200C) { // https://datatracker.ietf.org/doc/html/rfc5892#appendix-A.1
-			// rule 1: V + cp
-			// V = Combining_Class "Virama"
-			if (i > 0 && lookup_member(TABLE_V, v[i - 1])) { 
-				return cp; // allowed
+	}
+}
+function compose_pair(a, b) {
+	if (a >= L0 && a < L1 && b >= V0 && b < V1) { // LV
+		let l_index = a - L0;
+		let v_index = b - V0;
+		let lv_index = l_index * N_COUNT + v_index * T_COUNT;
+		return S0 + lv_index;
+	} else if (is_hangul(a) && b > T0 && b < T1 && (a - S0) % T_COUNT == 0) {
+		return a + (b - T0);
+	} else {
+		for (let [combined, v] of DECOMP) {		
+			if (v.length == 2 && v[0] == a && v[1] == b) {
+				if (lookup_member(COMP_EXCLUSIONS, combined)) break;
+				return combined;
 			}
-			// rule 2: {L,D} + T* + cp + T* + {R,D}
-			// L,D,T,R = Joining_Type
-			if (i > 0 && i < v.length - 1) { // there is room on either side
-				let head = i - 1;
-				while (head > 1 && lookup_member_span(TABLE_T, v[head])) head--; // T*
-				if (lookup_member_span(TABLE_LD, v[head])) { // L or D
-					let tail = i + 1;
-					while (tail < v.length - 1 && lookup_member_span(TABLE_T, v[tail])) tail++; // T*
-					if (lookup_member_span(TABLE_RD, v[tail])) { // R or D
-						return cp; // allowed
-					}
-				}
-			}
-			return empty; // ignore
-		} else if (cp === 0x200D) { // https://datatracker.ietf.org/doc/html/rfc5892#appendix-A.2
-			// rule 1: V + cp
-			// V = Combining_Class "Virama"
-			if (i > 0 && lookup_member(TABLE_V, v[i - 1])) { 
-				return cp; // allowed
-			}
-			return empty; // ignore
 		}
-		return get_mapped(cp) ?? cp;
-	}).flat())).normalize('NFC');
+	}
+	return -1;
 }
 
-// primary api
-// expects a string 
-// throws TypeError if not a string
-// returns a normalized string ready for namehash
-// throws Error if not normalizable
-function ens_normalize(name, ignore_disallowed = false) { // https://unicode.org/reports/tr46/#Processing
-	// idna() will:
-	// 1. map all full-stops to "." (see: Section 2.3 and Section 4.5)
-	// 2. apply ContextJ rules (see: Section 4.1 Rule #7) [as-of v14.0.0, ContextJ does not span a stop]
-	// 3. apply Section 4 Processing Rule #1 (Map) and Rule #2 (Normalize)
-	return idna(name, ignore_disallowed).split('.').map(label => { // Section 4 Processing Rule #3 (Break) + Section 4.1 Rule #4
-		if (label.startsWith('xn--')) { // Rule #4 (Convert)
-			label = idna(puny_decode(label.slice(4)), ignore_disallowed);
+function decomposer(cps, callback) {
+	let stack = [];
+	cps.forEach(cp => decompose(cp, next));
+	drain();
+	function drain() {
+		stack.sort((a, b) => a[0] - b[0]).forEach(([rank, cp]) => callback(rank, cp));
+		stack.length = 0;
+	}
+	function next(cp) {
+		let rank = 1 + COMBINING_RANK.findIndex(table => lookup_member(table, cp));
+		if (rank == 0) {
+			drain();
+			callback(rank, cp);
+		} else {
+			stack.push([rank, cp]);
 		}
-		// Section 4.1 Rule #1 (NFC) is already satisfied by idna()
-		// apply Section 4.1 Rule #2
-		if (label.length >= 4 && label[2] == '-' && label[3] == '-') throw new Error(`double-hyphen at label[3:4]: ${label}`);
-		// apply Section 4.1 Rule #3
-		if (label.startsWith('-')) throw new Error(`hyphen at label start: ${label}`);
-		if (label.endsWith('-')) throw new Error(`hyphen at label end: ${label}`);
-		// apply Section 4.1 Rule #5
-		if (label.length > 0 && is_combining_mark(label.codePointAt(0))) throw new Error(`mark at label start: ${label}`);
-		// Section 4.1 Rule #6 (Valid) is satisfied by idna() following EIP-137 (transitional=N, useSTD3AsciiRules=Y)
-		// Section 4.1 Rule #7 (ContextJ) is satisfied by idna() 
-		// Section 4.1 Rule #8 NYI
-		return label;
-	}).join('.');
+	}
+}
+
+function nfc(cps) {
+	let ret = [];
+	let stack = [];
+	let prev_cp = -1;
+	let prev_rank = 0;
+	decomposer(cps, next);
+	if (prev_cp >= 0) ret.push(prev_cp);
+	ret.push(...stack);	
+	return ret;
+	function next(rank, cp) {
+		if (prev_cp === -1) {
+			if (rank == 0) {
+				prev_cp = cp;
+			} else {
+				ret.push(cp);
+			}
+		} else if (prev_rank > 0 && prev_rank >= rank) {
+			if (rank == 0) {
+				ret.push(prev_cp, ...stack);
+				stack.length = 0;
+				prev_cp = cp;
+			} else {
+				stack.push(cp);
+			}
+			prev_rank = rank;
+		} else {
+			let composed = compose_pair(prev_cp, cp);
+			if (composed >= 0) {
+				prev_cp = composed;
+			} else if (prev_rank == 0 && rank == 0) {
+				ret.push(prev_cp);
+				prev_cp = cp;
+			} else {
+				stack.push(cp);
+				prev_rank = rank;
+			}
+		}
+	}
+}
+
+var PAYLOAD$1 = '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';
+
+let r$1 = decode_payload(PAYLOAD$1);
+const BIDI_R_AL = read_member_table(r$1);
+const BIDI_L = read_member_table(r$1);
+const BIDI_AN = read_member_table(r$1);
+const BIDI_EN = read_member_table(r$1);
+const BIDI_ECTOB = read_member_table(r$1);
+const BIDI_NSM = read_member_table(r$1);
+
+// [Validity] 8.) If CheckBidi, and if the domain name is a Bidi domain name, then the label 
+// must satisfy all six of the numbered conditions in [IDNA2008] RFC 5893, Section 2.
+// * The spec is ambiguious regarding when you can determine a domain name is bidi
+// * According to IDNATestV2, this is calculated AFTER puny decoding
+// https://unicode.org/reports/tr46/#Notation
+// A Bidi domain name is a domain name containing at least one character with BIDI_Class R, AL, or AN
+
+function is_bidi_label(cps) {
+	return cps.some(cp => lookup_member(BIDI_R_AL, cp) || lookup_member(BIDI_AN, cp));
+}
+
+function validate_bidi_label(cps) {
+	if (cps.length == 0) return;
+	// https://www.rfc-editor.org/rfc/rfc5893.txt
+	// 1.) The first character must be a character with Bidi property L, R, 
+	// or AL.  If it has the R or AL property, it is an RTL label; if it
+	// has the L property, it is an LTR label.
+	let last = cps.length - 1;
+	if (lookup_member(BIDI_R_AL, cps[0])) { // RTL 
+		// 2.) In an RTL label, only characters with the Bidi properties R, AL,
+		// AN, EN, ES, CS, ET, ON, BN, or NSM are allowed.
+		if (!cps.every(cp => lookup_member(BIDI_R_AL, cp) 
+			|| lookup_member(BIDI_AN, cp)
+			|| lookup_member(BIDI_EN, cp)
+			|| lookup_member(BIDI_ECTOB, cp) 
+			|| lookup_member(BIDI_NSM, cp))) throw new Error(`RTL: disallowed properties`);
+		// 3. In an RTL label, the end of the label must be a character with
+		// Bidi property R, AL, EN, or AN, followed by zero or more
+		// characters with Bidi property NSM.
+		while (lookup_member(BIDI_NSM, cps[last])) last--;
+		last = cps[last];
+		if (!(lookup_member(BIDI_R_AL, last) 
+			|| lookup_member(BIDI_EN, last) 
+			|| lookup_member(BIDI_AN, last))) throw new Error(`RTL: disallowed ending`);
+		// 4. In an RTL label, if an EN is present, no AN may be present, and vice versa.
+		let en = cps.some(cp => lookup_member(BIDI_EN, cp));
+		let an = cps.some(cp => lookup_member(BIDI_AN, cp));
+		if (en && an) throw new Error(`RTL: AN+EN`);
+	} else if (lookup_member(BIDI_L, cps[0])) { // LTR
+		// 5. In an LTR label, only characters with the Bidi properties L, EN,
+		// ES, CS, ET, ON, BN, or NSM are allowed.
+		if (!cps.every(cp => lookup_member(BIDI_L, cp) 
+			|| lookup_member(BIDI_EN, cp)
+			|| lookup_member(BIDI_ECTOB, cp)
+			|| lookup_member(BIDI_NSM, cp))) throw new Error(`LTR: disallowed properties`);
+		// 6. end with L or EN .. 0+ NSM
+		while (lookup_member(BIDI_NSM, cps[last])) last--;
+		last = cps[last];
+		if (!lookup_member(BIDI_L, last) 
+			&& !lookup_member(BIDI_EN, last)) throw new Error(`LTR: disallowed ending`);
+	} else {
+		throw new Error(`unknown direction`);
+	}
+}
+
+var PAYLOAD = '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';
+
+// built: 2021-12-23T21:04:48.791Z
+let r = decode_payload(PAYLOAD);
+const STOP = read_member_function(r);
+const VALID = read_member_function(r);
+const IGNORED = read_member_function(r);
+const MAPPED = read_mapped_table(r);
+const COMBINING_MARKS = read_member_function(r);
+const EMOJI_PARSER = r() && emoji_parser_factory(r);
+
+// emoji tokens are as-is
+// text tokens are normalized
+// note: it's safe to apply to entire 
+// string but you'd have to retokenize
+function flatten_label_tokens(tokens) {
+	return tokens.flatMap(token => token.e ?? nfc(token.v));
+}
+
+function label_error(cps, message) {
+	return new Error(`Disallowed label "${escape_unicode(String.fromCodePoint(...cps))}": ${message}`);
+}
+
+// Primary API
+// throws TypeError if not a string
+// throws Error if not normalizable
+// returns a string ready for namehash
+function ens_normalize(name) { 
+	// 
+	// Original Specification: 
+	// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-137.md
+	// "UTS46 with the options transitional=false and useSTD3AsciiRules=true."
+	// * IDNA 2003 or 2008 = not-specified
+	// * CheckHyphens = true
+	// * CheckJoiners = true
+	// * CheckBidi = not-specified
+	// * ContextJ = not-specified
+	// * ContextO = not-specified
+	//
+	// This Library:
+	// * IDNA 2008 w/ an UTS-51 emoji parser
+	// * Alternative stops are disallowed
+	// * ContextJ = ContextO = true
+	// * CheckBidi = yes (if xbidi = no)
+	// see: build-tables.js
+	//
+	// https://www.unicode.org/reports/tr51/
+	// https://unicode.org/reports/tr46/#Processing
+	// https://unicode.org/reports/tr46/#Validity_Criteria
+	// [Processing] 1.) Map
+	// [Processing] 2.) Normalize: Normalize the domain_name string to Unicode Normalization Form C.
+	// [Processing] 3.) Break: Break the string into labels at U+002E ( . ) FULL STOP.
+	const HYPHEN = 0x2D; // HYPHEN MINUS
+	let labels = tokenized_idna(explode_cp(name), EMOJI_PARSER, cp => {
+		// ignored: Remove the code point from the string. This is equivalent to mapping the code point to an empty string.
+		if (STOP(cp)) return;
+		if (IGNORED(cp)) return [];
+		// deviation: Leave the code point unchanged in the string.
+		// valid: Leave the code point unchanged in the string.		
+		if (VALID(cp)) return [cp];
+		// mapped: Replace the code point in the string by the value for the mapping in Section 5, IDNA Mapping Table.
+		let mapped = lookup_mapped(MAPPED, cp);
+		if (mapped) return mapped;
+		// disallowed: Leave the code point unchanged in the string, and record that there was an error.
+		throw new Error(`Disallowed character "${escape_unicode(String.fromCodePoint(cp))}"`);
+	}).map(tokens => {
+		let cps = flatten_label_tokens(tokens);
+		// [Processing] 4.) Convert/Validate
+		if (cps.length >= 4 && cps[2] == HYPHEN && cps[3] == HYPHEN) { // "**--"
+			if (cps[0] == 0x78 && cps[1] == 0x6E) { // "xn--"
+				let cps_decoded;
+				try {
+					// Attempt to convert the rest of the label to Unicode according to Punycode [RFC3492].
+					// If that conversion fails, record that there was an error, and continue with the next label.
+					cps_decoded = puny_decode(cps.slice(4));
+					// With either Transitional or Nontransitional Processing, sources already in Punycode are validated without mapping. 
+					// In particular, Punycode containing Deviation characters, such as href="xn--fu-hia.de" (for fuß.de) is not remapped. 
+					// This provides a mechanism allowing explicit use of Deviation characters even during a transition period. 
+					[tokens] = tokenized_idna(cps_decoded, EMOJI_PARSER, cp => VALID(cp) ? [cp] : []);
+					let expected = flatten_label_tokens(tokens);
+					if (cps_decoded.length != expected.length || !cps_decoded.every((x, i) => x == expected[i])) throw new Error('not normalized');
+				} catch (err) {
+					throw label_error(cps, `punycode: ${err.message}`);
+				}
+				// Otherwise replace the original label in the string by the results of the conversion. 
+				cps = cps_decoded;
+				// warning: this could be empty
+				// warning: this could be "**--"
+			}
+		}
+		if (cps.length > 0) {
+			// [Validity] 1.) The label must be in Unicode Normalization Form NFC.
+			// => satsified by nfc() via flatten_label_tokens()
+			// [Validity] 2.) If CheckHyphens, the label must not contain a U+002D HYPHEN-MINUS character in both the third and fourth positions.
+			// note: we check this here (rather than above) because puny can expand into "aa--bb"
+			if (cps.length >= 4 && cps[2] == HYPHEN && cps[3] == HYPHEN) throw label_error(cps, `invalid label extension`);
+			// [Validity] 3.) If CheckHyphens, the label must neither begin nor end with a U+002D HYPHEN-MINUS character.
+			if (cps[0] == HYPHEN) throw label_error(cps, `leading hyphen`);
+			if (cps[cps.length - 1] == HYPHEN) throw label_error(cps, `trailing hyphen`);		
+			// [Validity] 4.) The label must not contain a U+002E ( . ) FULL STOP.
+			// => satisfied by [Processing] 3.) Break
+			// [Validity] 5.) The label must not begin with a combining mark, that is: General_Category=Mark.
+			if (COMBINING_MARKS(cps[0])) throw label_error(cps, `leading combining mark`);
+			// [Validity] 6.) For Nontransitional Processing, each value must be either valid or deviation.
+			// => satisfied by tokenized_idna()
+			// [Validity] 7.) If CheckJoiners, the label must satisify the ContextJ rules
+			// this also does ContextO
+			try {
+				// emoji should be invisible to context rules
+				// IDEA: replace emoji w/a generic character 
+				validate_context(tokens.flatMap(({v}) => v ?? []));
+			} catch (err) {
+				throw label_error(cps, err.message);
+			}
+			// [Validity] 8.) see below
+		}
+		return tokens;
+	});
+	// [Validity] 8.) If CheckBidi, and if the domain name is a Bidi domain name, then the label 
+	// must satisfy all six of the numbered conditions in [IDNA2008] RFC 5893, Section 2.
+	/*BIDI*/
+	// * The spec is ambiguious regarding when you can determine a domain name is bidi
+	// * According to IDNATestV2, this is calculated AFTER puny decoding
+	// https://unicode.org/reports/tr46/#Notation
+	// A Bidi domain name is a domain name containing at least one character with BIDI_Class R, AL, or AN
+	let text_labels = labels.map(tokens => tokens.flatMap(({v}) => v ?? []));
+	if (text_labels.some(is_bidi_label)) {
+		for (let i = 0; i < labels.length; i++) {
+			try {
+				validate_bidi_label(text_labels[i]);
+			} catch (err) {
+				throw label_error(flatten_label_tokens(labels[i]), `bidi: ${err.message}`);
+			}
+		}
+	}
+	/*~BIDI*/
+	return labels.map(tokens => String.fromCodePoint(...flatten_label_tokens(tokens))).join('.');
+}
+
+// Secondary API
+// throws TypeError if not a string
+// turns a name into tokens: eg. "R💩affy.eth"
+// this is much nicer than exposing the predicates
+// [[{m:0x52, to:[0x72]},{e:[0x1F4A9]},{t:[61,66,66]}],[{t:[65,74,68]}]]
+function ens_tokenize(name) {
+	return tokenized_idna(explode_cp(name), EMOJI_PARSER, cp => {
+		if (STOP(cp)) return {};
+		if (VALID(cp)) return [cp];
+		if (IGNORED(cp)) return {i: cp};
+		let mapped = lookup_mapped(MAPPED, cp);
+		if (mapped) return {m: cp, u: mapped};
+		return {d: cp};
+	})[0];
 }
 
 var ADDR_TYPES = {
@@ -2010,13 +2799,27 @@ var ADDR_TYPES = {
   "FVDC": 608589380
 };
 
-/*
-export function ens_labelhash(s) {
-	return keccak().update(s).hex;
+// expects a string
+// warning: this does not normalize
+// https://eips.ethereum.org/EIPS/eip-137#name-syntax
+function labelhash(label) {
+	return keccak().update(label).bytes
 }
-*/
+function hash_from_label(label) {
+	return new Uint256(labelhash(label));
+}
+function node_from_ens_name(name) {
+	if (typeof name !== 'string') throw new TypeError('expected string');
+	let buf = new Uint8Array(64); 
+	if (name.length > 0) {
+		for (let label of name.split('.').reverse()) {
+			buf.set(labelhash(label), 32);
+			buf.set(keccak().update(buf).bytes, 0);
+		}
+	}
+	return new Uint256(buf.slice(0, 32));
+}
 
-// https://docs.ens.domains/ens-deployments
 const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e'; // ens registry contract on mainnet
 const RESOLVED = Symbol('ENSResolved');
 
@@ -2024,40 +2827,106 @@ function resolved_value() {
 	return new Date();
 }
 
-async function ens_address_from_node(provider, node) {
-	let resolver = await call_registry_resolver(provider, node);
-	let address = false; // TODO: decide this placeholder value
-	if (!is_null_hex(resolver)) {
-		address = await call_resolver_addr(provider, resolver, node);
+// turn a name/address/object into {node, resolver, ...}
+async function ens_resolve(provider, input) {
+	if (input instanceof Uint256) { // node
+		let resolver = await call_registry_resolver(provider, input);
+		return {node: input, resolver, [RESOLVED]: resolved_value()};
 	}
-	return {node, resolver, address};
+	if (typeof input === 'object') { // previously resolved object? 
+		if (RESOLVED in input) return input; // trusted
+		input = input.node ?? input.name ?? input.address; // fallback
+	}
+	if (typeof input === 'string') { // name or address
+		input = input.trim();
+		if (input.length > 0) {
+			let name0 = input;
+			try { 
+				// assume input is address
+				name0 = await ens_name_for_address(provider, input); 
+			} catch (ignored) {
+			}
+			if (!name0) {
+				// this only happens if input was address
+				// and no primary was set
+				throw new Error(`No primary for address`);
+			}
+			let name = ens_normalize(input);
+			let node = node_from_ens_name(name);
+			let resolver = await call_registry_resolver(provider, node);
+			return {name0, name, node, resolver, [RESOLVED]: resolved_value()};
+		}
+	}
+	throw new TypeError('Expected name or address');
 }
 
+// this lookups up an address for name
+// it also stores the result into the record
+async function lookup_address(provider, input) {
+	let ret = await ens_resolve(provider, input);
+	let {resolver, node, address} = ret;
+	if (is_null_hex(resolver)) return; // no resolver
+	if (address) return address; // already looked up
+	ret.address = address = await call_resolver_addr(provider, resolver, node);
+	return address;
+}
+
+/*
 // https://eips.ethereum.org/EIPS/eip-137
-async function ens_address_from_name(provider, name0, ...a) {	
-	let name = ens_normalize(name0, ...a); // throws 
-	let node = namehash(name);
-	return {name0, name, ...await ens_address_from_node(provider, node), [RESOLVED]: resolved_value()};
+export async function address_from_ens_name(provider, name0) {	
+	let name = ens_normalize(name0); // throws 
+	let node = node_from_ens_name(name);
+	return {name0, name, ...await address_from_node(provider, node), [RESOLVED]: resolved_value()};
+}
+*/
+/*
+export async function is_available(provider, input) {
+	let ret = await ens_resolve(provider, input);
+	let {resolver, node, address} = ret;
+	
+	const SIG = '96e494e8'; // available(uint256)
+	let available = (await eth_call(provider, ENS_REGISTRY, ABIEncoder.method(SIG).number(node))).boolean();
+	return {name0, name, node, available};
 }
 
-// https://eips.ethereum.org/EIPS/eip-181
-async function ens_name_from_address(provider, address) {
-	address = checksum_address(address); // throws
-	let node = namehash(`${address.slice(2).toLowerCase()}.addr.reverse`); 
-	let resolver = await call_registry_resolver(provider, node);
-	let ret = {node, resolver, address, [RESOLVED]: resolved_value()};
-	if (!is_null_hex(resolver)) {
-		const SIG = '691f3431'; // name(bytes)
-		ret.name = (await eth_call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).string();
+
+export async function ens_label_owner(provider, name0) {
+	let name = ens_normalize(name0); // throws 
+	let [label, rest] = name.split('.', 2);
+	if (!rest) throw new Error('top level');
+	let node = ens_node_from_name(rest);
+	let domain = await ens_address_from_node(provider, node);
+	if (!domain) throw new Error(`domain does not exist: ${rest}`);
+	domain.name = rest;
+	let token = labelhash(label);
+	let ret = {name, label, token, domain};
+	try {
+		const SIG = '6352211e'; // ownerOf(uint256)
+		ret.owner = (await eth_call(provider, address, ABIEncoder.method(SIG).add_hex(token))).addr();
+	} catch (err) {
+		if (!err.reverted) throw err;
 	}
 	return ret;
+}
+*/
+
+// https://eips.ethereum.org/EIPS/eip-181
+// warning: this doesn't have to be normalized
+async function ens_name_for_address(provider, address) {
+	if (typeof address === 'object') ({address} = address);
+	address = checksum_address(address); // throws
+	let rev_node = node_from_ens_name(`${address.slice(2).toLowerCase()}.addr.reverse`); 
+	let rev_resolver = await call_registry_resolver(provider, rev_node);
+	if (is_null_hex(rev_resolver)) throw new Error('no reverse resolver');
+	const SIG = '691f3431'; // name(bytes)
+	return (await eth_call(provider, rev_resolver, ABIEncoder.method(SIG).number(rev_node))).string();
 }
 
 // https://medium.com/the-ethereum-name-service/step-by-step-guide-to-setting-an-nft-as-your-ens-profile-avatar-3562d39567fc
 // https://medium.com/the-ethereum-name-service/major-refresh-of-nft-images-metadata-for-ens-names-963090b21b23
 // https://github.com/ensdomains/ens-metadata-service
 async function ens_avatar(provider, input) {
-	let ret = await resolve_name_from_input(provider, input);
+	let ret = await ens_resolve(provider, input);
 	let {node, resolver, address} = ret;
 	if (is_null_hex(resolver)) return {type: 'none', ...ret};
 	if (!address) ret.address = await call_resolver_addr(provider, resolver, node);
@@ -2080,38 +2949,56 @@ async function parse_avatar(avatar, provider = null, address = false) {
 		let part1 = parts[1];
 		if (part1.startsWith('erc721:')) {
 			let contract = part1.slice(part1.indexOf(':') + 1);
-			let token = parts[2];
-			let token_big = BigInt(token);
+			if (!is_valid_address(contract)) return  {type: 'invalid', error: 'expected contract address'};
+			let token;
+			try {
+				token = Uint256.from_str(parts[2]);
+			} catch (err) {
+				return {type: 'invalid', error: 'expected uint256 token'};
+			}
 			let ret = {type: 'nft', interface: 'erc721', contract, token, chain};
 			if (provider && parseInt(provider.chainId) === chain) {
 				const SIG_tokenURI = 'c87b56dd'; // tokenURI(uint256)
 				const SIG_ownerOf  = '6352211e'; // ownerOf(uint256)
-				let [owner, meta_uri] = await Promise.all([
-					eth_call(provider, contract, ABIEncoder.method(SIG_ownerOf).big(token_big)).then(x => x.addr()),
-					eth_call(provider, contract, ABIEncoder.method(SIG_tokenURI).big(token_big)).then(x => x.string())
-				]);
-				ret.owner = owner;
-				ret.meta_uri = meta_uri;
-				if (address) {
-					ret.owned = address === owner ? 1 : 0;
+				try {
+					let [owner, meta_uri] = await Promise.all([
+						eth_call(provider, contract, ABIEncoder.method(SIG_ownerOf).number(token)).then(x => x.addr()),
+						eth_call(provider, contract, ABIEncoder.method(SIG_tokenURI).number(token)).then(x => x.string())
+					]);
+					ret.owner = owner;
+					ret.meta_uri = meta_uri;
+					if (address) {
+						ret.owned = address === owner ? 1 : 0;
+					}
+				} catch (err) {
+					return {type: 'invalid', error: `invalid response from contract`};
 				}
 			}
 			return ret;
 		} else if (part1.startsWith('erc1155:')) {
 			let contract = part1.slice(part1.indexOf(':') + 1);
-			let token = parts[2];
-			let token_hex = BigInt(token).toString(16).padStart(64, '0'); // no 0x
+			if (!is_valid_address(contract)) return  {type: 'invalid', error: 'invalid contract address'};
+			let token;
+			try {
+				token = Uint256.from_str(parts[2]);
+			} catch (err) {
+				return {type: 'invalid', error: 'expected uint256 token'};
+			}
 			let ret = {type: 'nft', interface: 'erc1155', contract, token, chain};
 			if (provider && parseInt(provider.chainId) === chain) {
 				const SIG_uri       = '0e89341c'; // uri(uint256)
 				const SIG_balanceOf = '00fdd58e'; // balanceOf(address,uint256)
-				let [balance, meta_uri] = await Promise.all([
-					!address ? -1 : eth_call(provider, contract, ABIEncoder.method(SIG_balanceOf).addr(address).add_hex(token_hex)).then(x => x.number()),
-					eth_call(provider, contract, ABIEncoder.method(SIG_uri).add_hex(token_hex)).then(x => x.string())
-				]);
-				ret.meta_uri = meta_uri.replace(/{id}/, token_hex); // 1155 standard
-				if (address) {
-					ret.owned = balance;
+				try {
+					let [balance, meta_uri] = await Promise.all([
+						!address ? -1 : eth_call(provider, contract, ABIEncoder.method(SIG_balanceOf).addr(address).number(token)).then(x => x.number()),
+						eth_call(provider, contract, ABIEncoder.method(SIG_uri).number(token)).then(x => x.string())
+					]);
+					ret.meta_uri = meta_uri.replace(/{id}/, token.hex); // 1155 standard
+					if (address) {
+						ret.owned = balance;
+					}
+				} catch (err) {
+					return {type: 'invalid', error: `invalid response from contract`};
 				}
 			}
 			return ret;
@@ -2127,7 +3014,7 @@ async function parse_avatar(avatar, provider = null, address = false) {
 async function ens_text_record(provider, input, keys) {
 	if (typeof keys === 'string') keys = [keys];
 	if (!Array.isArray(keys)) throw new TypeError('Expected key or array of keys');
-	let ret = await resolve_name_from_input(provider, input);
+	let ret = await ens_resolve(provider, input);
 	let {node, resolver} = ret;
 	if (!is_null_hex(resolver)) {
 		let values = await Promise.all(keys.map(x => call_resolver_text(provider, resolver, node, x)));
@@ -2141,7 +3028,7 @@ async function ens_text_record(provider, input, keys) {
 async function ens_addr_record(provider, input, addresses) {
 	if (!Array.isArray(addresses)) addresses = [addresses];
 	addresses = addresses.map(get_addr_type_from_input); // throws
-	let ret = await resolve_name_from_input(provider, input);
+	let ret = await ens_resolve(provider, input);
 	let {node, resolver} = ret;
 	if (!is_null_hex(resolver)) {
 		let values = await Promise.all(addresses.map(([_, type]) => call_resolver_addr_for_type(provider, resolver, node, type)));
@@ -2153,11 +3040,11 @@ async function ens_addr_record(provider, input, addresses) {
 // https://eips.ethereum.org/EIPS/eip-1577
 // https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/ContentHashResolver.sol
 async function ens_contenthash_record(provider, input) {
-	let ret = await resolve_name_from_input(provider, input);
+	let ret = await ens_resolve(provider, input);
 	let {node, resolver} = ret;
 	if (!is_null_hex(resolver)) {
 		const SIG = 'bc1c58d1'; // contenthash(bytes32)
-		let v = (await eth_call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).memory();
+		let v = (await eth_call(provider, resolver, ABIEncoder.method(SIG).number(node))).memory();
 		if (v.length > 0) {
 			ret.contenthash = v;
 			// https://github.com/multiformats/multicodec
@@ -2175,12 +3062,12 @@ async function ens_contenthash_record(provider, input) {
 // https://github.com/ethereum/EIPs/pull/619
 // https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/PubkeyResolver.sol
 async function ens_pubkey_record(provider, input) {
-	let ret = await resolve_name_from_input(provider, input);
+	let ret = await ens_resolve(provider, input);
 	let {node, resolver} = ret;
 	if (!is_null_hex(resolver)) {
 		const SIG = 'c8690233'; // pubkey(bytes32)
-		let dec = await eth_call(provider, resolver, ABIEncoder.method(SIG).add_hex(node));
-		ret.pubkey = {x: dec.big(), y: dec.big()};
+		let dec = await eth_call(provider, resolver, ABIEncoder.method(SIG).number(node));
+		ret.pubkey = {x: dec.uint256(), y: dec.uint256()};
 	}
 	return ret;
 }
@@ -2210,43 +3097,10 @@ function get_addr_type_from_input(x) {
 	}
 }
 
-// turn a name/address/object into {name, node, resolver}
-async function resolve_name_from_input(provider, input) {
-	if (typeof input === 'object') { // previously resolved object? 
-		if (RESOLVED in input) return input; // trusted
-		input = input.name ?? input.address; // fallback
-	}
-	if (typeof input === 'string') { // name or address
-		input = input.trim();
-		if (input.length > 0) {
-			let ret;
-			try { 
-				// assume input is address
-				// throws immediately if not
-				ret = await ens_name_from_address(provider, input); 
-			} catch (ignored) {
-				// assume input is name
-				// FIXME: no way to choose disallowed behavior 
-				ret = {name: ens_normalize(input)}; // throws
-			}
-			let {name} = ret;
-			if (!name) {
-				// this only happens if input was address
-				// and we couldn't determine a name
-				throw new Error(`No name for address`);
-			}
-			let node = namehash(name);
-			let resolver = await call_registry_resolver(provider, node);
-			return {...ret, node, resolver, [RESOLVED]: resolved_value()};
-		}
-	}
-	throw new TypeError('Expected name or address');
-}
-
 async function call_registry_resolver(provider, node) {
 	const SIG = '0178b8bf'; // resolver(bytes32)
 	try {
-		return (await eth_call(provider, ENS_REGISTRY, ABIEncoder.method(SIG).add_hex(node))).addr();
+		return (await eth_call(provider, ENS_REGISTRY, ABIEncoder.method(SIG).number(node))).addr();
 	} catch (cause) {
 		throw new Error('Invalid response from registry', {cause});
 	}
@@ -2257,7 +3111,7 @@ async function call_registry_resolver(provider, node) {
 async function call_resolver_addr(provider, resolver, node) {
 	const SIG = '3b3b57de'; // addr(bytes32)
 	try {
-		return (await eth_call(provider, resolver, ABIEncoder.method(SIG).add_hex(node))).addr();
+		return (await eth_call(provider, resolver, ABIEncoder.method(SIG).number(node))).addr();
 	} catch (cause) {
 		throw new Error('Invalid response from resolver for addr', {cause});
 	}
@@ -2266,7 +3120,7 @@ async function call_resolver_addr(provider, resolver, node) {
 async function call_resolver_text(provider, resolver, node, key) {
 	const SIG = '59d1d43c'; // text(bytes32,string)
 	try {
-		return (await eth_call(provider, resolver, ABIEncoder.method(SIG).add_hex(node).string(key))).string();
+		return (await eth_call(provider, resolver, ABIEncoder.method(SIG).number(node).string(key))).string();
 	} catch (cause) {
 		throw new Error(`Invalid response from resolver for text: ${key}`, {cause});
 	}
@@ -2275,10 +3129,10 @@ async function call_resolver_text(provider, resolver, node, key) {
 async function call_resolver_addr_for_type(provider, resolver, node, type) {
 	const SIG = 'f1cb7e06'; // addr(bytes32,uint256);
 	try {
-		return (await eth_call(provider, resolver, ABIEncoder.method(SIG).add_hex(node).number(type))).memory();
+		return (await eth_call(provider, resolver, ABIEncoder.method(SIG).number(node).number(type))).memory();
 	} catch (cause) {
 		throw new Error(`Invalid response from resolver for addr of type: ${format_addr_type(type)}`, {cause});
 	}
 }
 
-export { ABIDecoder, ABIEncoder, ADDR_TYPES, FetchProvider, base58_from_bytes, bytes_from_base58$1 as bytes_from_base58, bytes_from_hex, bytes_from_str, checksum_address, ens_addr_record, ens_address_from_name, ens_address_from_node, ens_avatar, ens_contenthash_record, ens_name_from_address, namehash as ens_node_from_name, ens_normalize, ens_pubkey_record, ens_text_record, eth_call, get_mapped, hex_from_bytes, idna, is_combining_mark, is_disallowed, is_ignored, is_multihash, is_null_hex, is_valid_address, keccak, namehash, number_from_abi, parse_avatar, retry, sha3, shake, str_from_bytes };
+export { ABIDecoder, ABIEncoder, ADDR_TYPES, FetchProvider, NULL_ADDRESS, Uint256, WebSocketProvider, base58_from_bytes, bytes_from_base58$1 as bytes_from_base58, bytes_from_digits_or_null, bytes_from_hex, bytes_from_utf8, checksum_address, compare_arrays, ens_addr_record, ens_avatar, ens_contenthash_record, ens_name_for_address, ens_normalize, ens_pubkey_record, ens_resolve, ens_text_record, ens_tokenize, eth_call, hash_from_label, hex_from_bytes, is_multihash, is_null_hex, is_valid_address, keccak, left_truncate_bytes, lookup_address, node_from_ens_name, parse_avatar, parse_bytes_from_digits, retry, set_bytes_to_unsigned, sha3, shake, unsigned_from_bytes, utf8_from_bytes };

@@ -3,29 +3,25 @@
 // primary api
 function keccak(bits = 256) { return new Fixed(bits,        0b1); } // [1]0*1
 
-// returns Uint8Array from string
-// accepts only string
-function bytes_from_str(s) {
-	if (typeof s !== 'string') throw TypeError('expected string');
-	s = unescape(encodeURIComponent(s)); // explode utf16
-	let {length} = s;
-	let v = new Uint8Array(length);
-	for (let i = 0; i < length; i++) {
-		v[i] = s.charCodeAt(i);
-	}
-	return v;
+// returns hex from Uint8Array
+// no 0x-prefix
+function hex_from_bytes(v) {
+	return [...v].map(x => x.toString(16).padStart(2, '0')).join('');
 }
-
 // accepts hex-string, 0x-prefix is optional
 // returns Uint8Array
 function bytes_from_hex(s) {
 	if (typeof s !== 'string') throw TypeError('expected string');
-	let pos = 0;
-	if (s.startsWith('0x')) pos += 2; // skip prefix
-	if (s.length & 1) s = `0${s}`; // zero-pad odd length
-	let len = (s.length - pos) >> 1;
+	if (s.startsWith('0x')) {
+		if (s.length == 2) throw new TypeError('expected digits'); // disallow "0x"
+		s = s.slice(2);
+	}
+	if (s.length & 1) {
+		s = `0${s}`; // zero-pad odd length (rare)
+	}
+	let len = s.length >> 1;
 	let v = new Uint8Array(len);
-	for (let i = 0; i < len; i++) {
+	for (let i = 0, pos = 0; i < len; i++) {
 		let b = parseInt(s.slice(pos, pos += 2), 16);
 		if (Number.isNaN(b)) throw new TypeError('expected hex byte');
 		v[i] = b;
@@ -33,47 +29,27 @@ function bytes_from_hex(s) {
 	return v;
 }
 
-// returns hex from Uint8Array
-// no 0x-prefix
-function hex_from_bytes(v) {
-	return [...v].map(x => x.toString(16).padStart(2, '0')).join('');
-}
-
-// returns str from Uint8Array
-function str_from_bytes(v) {
-	/*
-	let cps = [];
-	let pos = 0;
-	let cp = 0;
-	let need = 0;
-	while (pos < v.length) {
-		let b0 = v[pos++];
-		if (need > 0) {
-			if ((b0 >> 6) != 2) throw new Error('malformed utf8: expected continuation')
-			cp = (cp << 6) | (b0 & 0b111111);
-			if (--need == 0) cps.push(cp);
-			continue;
-		}
-		if (b0 < 0b01111111) {
-			cps.push(b0);
-		} else if (b0 < 0b11011111) {
-			cp = b0 & 0b11111;
-			need = 1;
-		} else if (b0 < 0b11101111) {
-			cp = b0 & 0b1111;
-			need = 2;
-		} else {
-			cp = b0 & 0b111;
-			need = 3;
-		}
+// returns Uint8Array from string
+// accepts only string
+function bytes_from_utf8(s) {
+	if (typeof s !== 'string') throw TypeError('expected string');
+	try {
+		s = unescape(encodeURIComponent(s));
+	} catch (cause) {
+		throw new Error('malformed utf8', {cause});
 	}
-	if (need > 0) throw new RangeError('malformed utf8: expected more bytes');
-	return String.fromCodePoint(...ret);
-	*/
+	let {length} = s;
+	let v = new Uint8Array(length);
+	for (let i = 0; i < length; i++) {
+		v[i] = s.charCodeAt(i);
+	}
+	return v;
+}
+function utf8_from_bytes(v) {
 	try {
 		return decodeURIComponent(escape(String.fromCharCode(...v)));
-	} catch (err) {
-		throw new Error('malformed utf8');
+	} catch (cause) {
+		throw new Error('malformed utf8', {cause});
 	}
 }
 
@@ -99,7 +75,7 @@ class KeccakHasher {
 			} else if (Array.isArray(v)) { 
 				v = Uint8Array.from(v);
 			} else if (typeof v === 'string') {
-				v = bytes_from_str(v);
+				v = bytes_from_utf8(v);
 			} else {
 				throw new TypeError('expected bytes');
 			}
@@ -154,7 +130,7 @@ class KeccakHasher {
 	finalize() {
 		let {sponge, suffix, ragged_shift, block_index, block_count} = this;
 		if (ragged_shift) {
-			if (ragged_shift == -1) return this; // already finalized, chainable
+			if (ragged_shift == -1) return; // already finalized
 			suffix = this.ragged_block | (suffix << ragged_shift);
 		}
 		sponge[block_index] ^= suffix;
@@ -172,10 +148,10 @@ class Fixed extends KeccakHasher {
 	get hex() { return hex_from_bytes(this.bytes); }
  	get bytes() {
 		this.finalize();
-		let {size, sponge: state} = this;
+		let {size, sponge} = this;
 		let v = new Int32Array(size);
 		for (let i = 0; i < size; i++) {
-			v[i] = state[i];
+			v[i] = sponge[i];
 		}		
 		return new Uint8Array(v.buffer);
 	}
@@ -366,6 +342,13 @@ function permute32(s) {
 	}
 }
 
+function compare_arrays(a, b) {
+	let {length: n} = a;
+	let c = n - b.length;
+	for (let i = 0; c == 0 && i < n; i++) c = a[i] - b[i];
+	return c;
+}
+
 // accepts address as string (0x-prefix is optional) 
 // returns 0x-prefixed checksummed address 
 // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-55.md
@@ -378,40 +361,184 @@ function checksum_address(s) {
 	return '0x' + [...s].map((x, i) => hash.charCodeAt(i) >= 56 ? x.toUpperCase() : x).join('');
 }
 
-// https://docs.soliditylang.org/en/latest/abi-spec.html
+class Uint256 {
+	static zero() {
+		return new this(new Uint8Array(32));
+	}
+	static from_number(i) {
+		return this.zero().set_number(i);
+	}
+	static from_bytes(v) { 
+		return new this(left_truncate_bytes(v, 32));
+	}
+	static from_hex(s) {
+		return this.from_bytes(bytes_from_hex(s));
+	}
+	static from_dec(s) {
+		if (!/^[0-9]+$/.test(s)) throw new TypeError('expected decimal digits');
+		let n = s.length;
+		if (n < 10) this.from_number(parseInt(s, 10));
+		let v = new Uint8Array(Math.max(32, n));
+		let w = 0;
+		for (let i = 0; i < n; i++) {
+			let carry = s.charCodeAt(i) - 0x30;
+			for (let i = 0; i < w; i++) {
+				carry += v[i] * 10;
+				v[i] = carry;
+				carry >>= 8;
+			}
+			while (carry > 0) {
+				v[w++] = carry;
+				carry >>= 8;
+			}
+		}
+		for (let a = Math.min(w, 15); a >= 0; a--) {
+			let b = 31 - a;
+			let temp = v[a];
+			v[a] = v[b];
+			v[b] = temp;
+		}
+		return new this(v.slice(0, 32));
+	}
+	static from_str(s) { // this works like parseInt
+		return s.startsWith('0x') ? this.from_hex(s) : this.from_dec(s);
+	}
+	constructor(v) {
+		if (!(v instanceof Uint8Array)) throw new TypeError('expected bytes');
+		if (v.length != 32) throw new TypeError('expected 32 bytes');
+		this.bytes = v;
+	}
+	compare(v) {
+		if (!(v instanceof Uint256)) throw new TypeError('expected Uint256');
+		return compare_arrays(this.bytes, v.bytes);	
+	}
+	set_number(i) {
+		set_bytes_to_unsigned(this.bytes, i);
+		return this;
+	}
+	get number() {
+		return unsigned_from_bytes(this.bytes);
+	}
+	get hex() {
+		return '0x' + hex_from_bytes(this.bytes);
+	}
+	get dec() {
+		let digits = [0];
+		for (let x of this.bytes) {
+			for (let i = 0; i < digits.length; ++i) {
+				let xx = (digits[i] << 8) | x;
+				digits[i] = xx % 10;
+				x = (xx / 10) | 0;
+			}
+			while (x > 0) {
+				digits.push(x % 10);
+				x = (x / 10) | 0;
+			}
+		}
+		return String.fromCharCode(...digits.reverse().map(x => 0x30 + x));
+	}
+	toJSON() {
+		return this.hex;
+	}
+	toString() {
+		return `Uint256(${this.hex})`;
+	}
+}
+
+function unsigned_from_bytes(v) {
+	if (v.length > 7) {  // 53 bits => 7 bytes, so everything else must be 0
+		let n = v.length - 7;
+		for (let i = 0; i < n; i++) if (v[i] > 0) throw new RangeError('overflow');
+		v = v.subarray(n);
+	}
+	let n = 0;
+	for (let i of v) n = (n * 256) + i;
+	if (!Number.isSafeInteger(n)) throw new RangeError('overflow');
+	return n;
+}
+
+function set_bytes_to_unsigned(v, i) {
+	if (!Number.isSafeInteger(i)) throw new RangeError('overflow');	
+	if (i < 0) throw new RangeError('underflow'); 	
+	for (let pos = v.length - 1; pos >= 0; pos--) {
+		v[pos] = i;
+		i = Math.floor(i / 256);	
+	}
+}
+
+// return exactly n-bytes
+// this always returns a copy
+function left_truncate_bytes(v, n) {
+	let {length} = v;
+	if (length == n) return v.slice();
+	if (length > n) return v.slice(n - length); // truncate
+	let copy = new Uint8Array(n);
+	copy.set(v, n - length); // zero pad
+	return copy;
+}
+
+// parse an arbitrarily-sized hex/dec integer
+// return null on parse failure
+// return null on overflow
+// return exactly n-bytes
+function bytes_from_digits_or_null(s, n) {
+	try {
+		let v = parse_bytes_from_digits(s);
+		if (v.length > n) return null; // overflow
+		return left_truncate_bytes(v, n)
+	} catch (ignored) {
+		return null;
+	}
+}
+
+function drop_leading_zeros(v) {
+	let {length} = v;
+	let i = 0;
+	while (i < length && v[i] == 0) i++;
+	return v.subarray(i);
+}
+
+function parse_bytes_from_digits(s) {
+	s = s.trim();
+	if (s.startsWith('0x')) return drop_leading_zeros(bytes_from_hex(s));
+	let {length} = s;
+	if (length == 0) throw new Error('expected digits');
+	let n = (length + 1) >> 1;
+	let v = new Uint8Array(n);
+	let w = n;
+	for (let j = 0; j < length; j++) {
+		let carry = s.charCodeAt(j) - 48;
+		if (carry < 0 || carry > 9) throw new Error('expected decimal digits');
+		for (let i = n - 1; i >= w; i--) {
+			carry += v[i] * 10;
+			v[i] = carry;
+			carry >>= 8;
+		}
+		while (carry > 0) {
+			v[--w] = carry;
+			carry >>= 8;
+		}
+	}
+	return v.subarray(w);
+}
 
 // convenience for making an eth_call
 // return an ABIDecoder
 // https://eth.wiki/json-rpc/API#eth_call
+// https://www.jsonrpc.org/specification
+// https://docs.soliditylang.org/en/latest/abi-spec.html
 async function eth_call(provider, tx, enc = null, tag = 'latest') {
 	if (typeof provider !== 'object') throw new TypeError('expected provider');
 	if (typeof tx === 'string') tx = {to: tx};
 	if (enc instanceof ABIEncoder) tx.data = enc.build_hex();
-	return ABIDecoder.from_hex(await provider.request({method: 'eth_call', params:[tx, tag]}));
-}
-
-function number_from_abi(x) {
-	if (typeof x === 'string') {
-		if (/^(0x)?[a-f0-9]{0,12}$/i.test(x)) return parseInt(x, 16); // worth it?
-		x = bytes_from_hex(x);
-	} else if (Array.isArray(x)) {
-		x = Uint8Array.from(x);
-	} else if (ArrayBuffer.isView(x)) {
-		x = new Uint8Array(x.buffer, x.byteOffset, x.byteLength);
-	} else if (x instanceof ArrayBuffer) {
-		x = new Uint8Array(x, 0, x.byteLength);			
-	} else {
-		throw new TypeError('unknown number to byte conversion');
+	try {
+		return ABIDecoder.from_hex(await provider.request({method: 'eth_call', params:[tx, tag]}));
+	} catch (err) {
+		if (err.code == -32000 && err.message === 'execution reverted') {
+			err.reverted = true;
+		}
+		throw err;
 	}
-	if (x.length > 7) {  // 53 bits => 7 bytes, so everything else must be 0
-		let n = x.length - 7;
-		for (let i = 0; i < n; i++) if (x[i] > 0) throw new RangeError('overflow');
-		x = x.subarray(n);
-	}
-	let n = 0;
-	for (let i of x) n = (n * 256) + i;
-	if (!Number.isSafeInteger(n)) throw new RangeError('overflow');
-	return n;
 }
 
 class ABIDecoder {
@@ -424,30 +551,30 @@ class ABIDecoder {
 	read(n) {
 		let {pos, buf} = this;
 		let end = pos + n;
-		if (end > buf.length) throw new Error('overflow');
+		if (end > buf.length) throw new RangeError('buffer overflow');
 		let v = buf.subarray(pos, end);
 		this.pos = end;
 		return v;
 	}
 	byte() {
 		let {pos, buf} = this;
-		if (pos >= buf.length) throw new Error('overflow');
+		if (pos >= buf.length) throw new RangeError('buffer overflow');
 		this.pos = pos + 1;
 		return buf[pos];
 	}
-	big(n = 32) { return BigInt('0x' + hex_from_bytes(this.read(n))); }
 	boolean() { return this.number() > 0; }	
-	number(n = 32) { return number_from_abi(this.read(n)); }
-	string() { return str_from_bytes(this.memory()); }
+	number(n = 32) { return unsigned_from_bytes(this.read(n)); }
+	uint256() { return new Uint256(this.read(32)); }
+	string() { return utf8_from_bytes(this.memory()); }
 	memory() {
 		let pos = this.number();
 		let end = pos + 32;
 		let {buf} = this;
-		if (end > buf.length) throw new RangeError('overflow');
-		let len = number_from_abi(buf.subarray(pos, end));
+		if (end > buf.length) throw new RangeError('buffer overflow');
+		let len = unsigned_from_bytes(buf.subarray(pos, end));
 		pos = end;
 		end += len;
-		if (end > buf.length) throw new RangeError('overflow');
+		if (end > buf.length) throw new RangeError('buffer overflow');
 		return buf.subarray(pos, end);
 	}
 	addr(checksum = true) {
@@ -471,25 +598,6 @@ class ABIDecoder {
 		return acc;
 	}
 }
-
-function set_bytes_to_number(v, i) {
-	if (typeof i === 'number') {
-		if (!Number.isSafeInteger(i)) throw new RangeError('overflow');					
-		for (let pos = v.length - 1; i && pos >= 0; pos--) {
-			v[pos] = i;
-			i = Math.floor(i / 256);	
-		}
-	} else if (i instanceof BigInt) {
-		let s = i.toString(16);
-		let {length} = s;
-		for (let pos = v.length - 1, off = length; pos >= 0 && off > 0; pos--, off -= 2) {
-			v[pos] = parseInt(s.slice(Math.max(0, off - 2), off), 16);
-		}
-	} else {
-		throw new TypeError(`unknown integer: ${i}`);
-	}
-}
-
 class ABIEncoder {
 	static method(method) {
 		if (typeof method !== 'string') throw new TypeError('expected string');
@@ -524,7 +632,7 @@ class ABIEncoder {
 			this.alloc(len);
 			let {buf} = this;
 			for (let [off, v] of tails) {
-				set_bytes_to_number(buf.subarray(off, off + 32), pos - offset); // global offset
+				set_bytes_to_unsigned(buf.subarray(off, off + 32), pos - offset); // global offset
 				buf.set(v, pos);
 				pos += v.length;
 			}
@@ -544,27 +652,30 @@ class ABIEncoder {
 		this.pos = end;
 		return buf.subarray(pos, end);
 	}
-	big(i, n = 32) {
-		let v = bytes_from_hex(i.toString(16));
-		if (v.length > n) v = v.subarray(v.length - n);
-		this.alloc(n).set(v, n - v.length);
-		return this; // chainable
-	}
 	bytes_hex(s) { return this.bytes(bytes_from_hex(s)); }
 	bytes(v) { 
 		this.alloc((v.length + 31) & ~31).set(v);		
 		return this; // chainable
 	}
 	number(i, n = 32) {
-		set_bytes_to_number(this.alloc(n), i);
+		if (i instanceof Uint256) {
+			let buf = this.alloc(n);
+			if (n < 32) {
+				buf.set(i.bytes.subarray(32 - n));
+			} else {
+				buf.set(i.bytes, n - 32);
+			}
+		} else {
+			set_bytes_to_unsigned(this.alloc(n), i);
+		}
 		return this; // chainable
 	}
-	string(s) { return this.memory(bytes_from_str(s)); } // chainable
+	string(s) { return this.memory(bytes_from_utf8(s)); } // chainable
 	memory(v) {
 		let {pos} = this; // remember offset
 		this.alloc(32); // reserve spot
 		let tail = new Uint8Array((v.length + 63) & ~31); // len + bytes + 0* [padded]
-		set_bytes_to_number(tail.subarray(0, 32), v.length);
+		set_bytes_to_unsigned(tail.subarray(0, 32), v.length);
 		tail.set(v, 32);
 		this.tails.push([pos, tail]);
 		return this; // chainable
@@ -583,8 +694,6 @@ class ABIEncoder {
 				v = new Uint8Array(v);
 			} else if (Array.isArray(v)) { 
 				v = Uint8Array.from(v);
-			} else if (typeof v === 'string') {
-				v = bytes_from_str(v);
 			} else {
 				throw new TypeError('expected bytes');
 			}
@@ -594,4 +703,4 @@ class ABIEncoder {
 	}
 }
 
-export { ABIDecoder, ABIEncoder, eth_call, number_from_abi };
+export { ABIDecoder, ABIEncoder, Uint256, bytes_from_digits_or_null, eth_call, left_truncate_bytes, parse_bytes_from_digits, set_bytes_to_unsigned, unsigned_from_bytes };
