@@ -1,4 +1,4 @@
-import {checksum_address, is_null_hex} from '../utils.js';
+import {checksum_address, is_checksum_address, is_null_hex} from '../utils.js';
 
 let ADDRESSES = [
 	'0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359',
@@ -19,3 +19,5 @@ if (!is_null_hex('0x0')) throw new Error('wtf');
 if (!is_null_hex('0')) throw new Error('wtf');
 
 console.log('OK');
+
+console.log(is_checksum_address('0x51050ec063d393217B436747617aD1C2285Aeeee'));

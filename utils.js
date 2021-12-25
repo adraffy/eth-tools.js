@@ -25,7 +25,7 @@ export function is_valid_address(s) {
 
 export function is_checksum_address(s) {
 	try {
-		return checksum_address(input_name) === input_name;
+		return checksum_address(s) === s;
 	} catch (ignored) {
 	}
 }
