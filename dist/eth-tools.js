@@ -394,6 +394,13 @@ function is_valid_address(s) {
 	return /^(0x)?[a-f0-9]{40}$/i.test(s);
 }
 
+function is_checksum_address(s) {
+	try {
+		return checksum_address(input_name) === input_name;
+	} catch (ignored) {
+	}
+}
+
 function is_null_hex(s) {
 	return /^(0x)?[0]+$/i.test(s);
 }
@@ -3137,4 +3144,4 @@ async function call_resolver_addr_for_type(provider, resolver, node, type) {
 	}
 }
 
-export { ABIDecoder, ABIEncoder, ADDR_TYPES, FetchProvider, NULL_ADDRESS, Uint256, WebSocketProvider, base58_from_bytes, bytes_from_base58$1 as bytes_from_base58, bytes_from_digits_or_null, bytes_from_hex, bytes_from_utf8, checksum_address, compare_arrays, ens_addr_record, ens_avatar, ens_contenthash_record, ens_name_for_address, ens_normalize, ens_pubkey_record, ens_resolve, ens_text_record, ens_tokenize, eth_call, hash_from_label, hex_from_bytes, is_multihash, is_null_hex, is_valid_address, keccak, left_truncate_bytes, lookup_address, node_from_ens_name, parse_avatar, parse_bytes_from_digits, retry, set_bytes_to_unsigned, sha3, shake, unsigned_from_bytes, utf8_from_bytes };
+export { ABIDecoder, ABIEncoder, ADDR_TYPES, FetchProvider, NULL_ADDRESS, Uint256, WebSocketProvider, base58_from_bytes, bytes_from_base58$1 as bytes_from_base58, bytes_from_digits_or_null, bytes_from_hex, bytes_from_utf8, checksum_address, compare_arrays, ens_addr_record, ens_avatar, ens_contenthash_record, ens_name_for_address, ens_normalize, ens_pubkey_record, ens_resolve, ens_text_record, ens_tokenize, eth_call, hash_from_label, hex_from_bytes, is_checksum_address, is_multihash, is_null_hex, is_valid_address, keccak, left_truncate_bytes, lookup_address, node_from_ens_name, parse_avatar, parse_bytes_from_digits, retry, set_bytes_to_unsigned, sha3, shake, unsigned_from_bytes, utf8_from_bytes };
