@@ -23,6 +23,13 @@ export function is_valid_address(s) {
 	return /^(0x)?[a-f0-9]{40}$/i.test(s);
 }
 
+export function is_checksum_address(s) {
+	try {
+		return checksum_address(input_name) === input_name;
+	} catch (ignored) {
+	}
+}
+
 export function is_null_hex(s) {
 	return /^(0x)?[0]+$/i.test(s);
 }
