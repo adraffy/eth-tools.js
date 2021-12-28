@@ -1,7 +1,6 @@
 import {keccak, bytes_from_hex, hex_from_bytes, bytes_from_utf8, utf8_from_bytes} from '@adraffy/keccak';
 import {checksum_address, compare_arrays} from './utils.js';
 
-
 export class Uint256 {
 	static zero() {
 		return new this(new Uint8Array(32));
@@ -44,10 +43,14 @@ export class Uint256 {
 	static from_str(s) { // this works like parseInt
 		return s.startsWith('0x') ? this.from_hex(s) : this.from_dec(s);
 	}
+	// note: this does not copy!!!		
 	constructor(v) {
 		if (!(v instanceof Uint8Array)) throw new TypeError('expected bytes');
 		if (v.length != 32) throw new TypeError('expected 32 bytes');
 		this.bytes = v;
+	}
+	clone() {
+		return new this.constructor(this.bytes.slice());
 	}
 	compare(v) {
 		if (!(v instanceof Uint256)) throw new TypeError('expected Uint256');
@@ -86,6 +89,7 @@ export class Uint256 {
 	}
 }
 
+// (Uint8Array) -> Number
 export function unsigned_from_bytes(v) {
 	if (v.length > 7) {  // 53 bits => 7 bytes, so everything else must be 0
 		let n = v.length - 7;
@@ -93,17 +97,18 @@ export function unsigned_from_bytes(v) {
 		v = v.subarray(n);
 	}
 	let n = 0;
-	for (let i of v) n = (n * 256) + i;
+	for (let i of v) n = (n * 256) + i; // cannot use shifts since 32-bit
 	if (!Number.isSafeInteger(n)) throw new RangeError('overflow');
 	return n;
 }
 
+// (Uint8Array, number)
 export function set_bytes_to_unsigned(v, i) {
 	if (!Number.isSafeInteger(i)) throw new RangeError('overflow');	
 	if (i < 0) throw new RangeError('underflow'); 	
 	for (let pos = v.length - 1; pos >= 0; pos--) {
 		v[pos] = i;
-		i = Math.floor(i / 256);	
+		i = Math.floor(i / 256); // cannot use shifts since 32-bit
 	}
 }
 
@@ -116,51 +121,6 @@ export function left_truncate_bytes(v, n) {
 	let copy = new Uint8Array(n);
 	copy.set(v, n - length); // zero pad
 	return copy;
-}
-
-// parse an arbitrarily-sized hex/dec integer
-// return null on parse failure
-// return null on overflow
-// return exactly n-bytes
-export function bytes_from_digits_or_null(s, n) {
-	try {
-		let v = parse_bytes_from_digits(s);
-		if (v.length > n) return null; // overflow
-		return left_truncate_bytes(v, n)
-	} catch (ignored) {
-		return null;
-	}
-}
-
-function drop_leading_zeros(v) {
-	let {length} = v;
-	let i = 0;
-	while (i < length && v[i] == 0) i++;
-	return v.subarray(i);
-}
-
-export function parse_bytes_from_digits(s) {
-	s = s.trim();
-	if (s.startsWith('0x')) return drop_leading_zeros(bytes_from_hex(s));
-	let {length} = s;
-	if (length == 0) throw new Error('expected digits');
-	let n = (length + 1) >> 1;
-	let v = new Uint8Array(n);
-	let w = n;
-	for (let j = 0; j < length; j++) {
-		let carry = s.charCodeAt(j) - 48;
-		if (carry < 0 || carry > 9) throw new Error('expected decimal digits');
-		for (let i = n - 1; i >= w; i--) {
-			carry += v[i] * 10;
-			v[i] = carry;
-			carry >>= 8;
-		}
-		while (carry > 0) {
-			v[--w] = carry;
-			carry >>= 8;
-		}
-	}
-	return v.subarray(w);
 }
 
 // convenience for making an eth_call
@@ -197,7 +157,7 @@ export class ABIDecoder {
 		this.pos = end;
 		return v;
 	}
-	byte() {
+	read_byte() {
 		let {pos, buf} = this;
 		if (pos >= buf.length) throw new RangeError('buffer overflow');
 		this.pos = pos + 1;
@@ -230,7 +190,7 @@ export class ABIDecoder {
 		let scale = 1;
 		const MASK = 0x7F;
 		while (true) {
-			let next = this.byte();
+			let next = this.read_byte();
 			acc += (next & 0x7F) * scale;
 			if (next <= MASK) break;
 			if (scale > 0x400000000000) throw new RangeException('overflow'); // Ceiling[Number.MAX_SAFE_INTEGER/128]

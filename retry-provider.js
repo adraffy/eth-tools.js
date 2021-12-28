@@ -1,4 +1,4 @@
-export function retry(provider, retry = 2, delay = 1000) {
+export function retry(provider, {retry = 2, delay = 1000} = {}) {
 	if (typeof retry !== 'number' || retry < 1) throw new TypeError('expected retry > 0');
 	if (typeof delay !== 'number' || delay < 0) throw new TypeError('expected delay >= 0');
 	async function unfucked(args) {

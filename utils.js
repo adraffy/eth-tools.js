@@ -1,7 +1,7 @@
 import {keccak} from '@adraffy/keccak';
 
 export function compare_arrays(a, b) {
-	let {length: n} = a;
+	let n = a.length;
 	let c = n - b.length;
 	for (let i = 0; c == 0 && i < n; i++) c = a[i] - b[i];
 	return c;
@@ -27,14 +27,13 @@ export function is_checksum_address(s) {
 	try {
 		return checksum_address(s) === s;
 	} catch (ignored) {
+		// undefined lets you differentiate !checksum from !address
 	}
 }
 
 export function is_null_hex(s) {
 	return /^(0x)?[0]+$/i.test(s);
 }
-
-export const NULL_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 export function is_multihash(s) {
 	try {

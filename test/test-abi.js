@@ -1,4 +1,4 @@
-import { hex_from_bytes } from '@adraffy/keccak';
+import {hex_from_bytes} from '@adraffy/keccak';
 import {ABIEncoder, ABIDecoder, Uint256, parse_bytes_from_digits, left_truncate_bytes} from '../abi.js';
 import {compare_arrays} from '../utils.js';
 import {random_bytes} from './utils.js';
