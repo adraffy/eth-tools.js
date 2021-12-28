@@ -1,11 +1,10 @@
 export class WebSocketProvider {
-	constructor({url, chain_id, WebSocket: ws_api, request_timeout = 10000, idle_timeout = 500}) {
+	constructor({url, WebSocket: ws_api, request_timeout = 10000, idle_timeout = 500}) {
 		if (typeof url !== 'string') throw new TypeError('expected url');
 		if (!ws_api) ws_api = globalThis.WebSocket;
 		if (!ws_api) throw new Error('unknown WebSocket implementation');
 		this.url = url;
 		this.ws_api = ws_api;
-		this.chain_id = chain_id;
 		this.request_timeout = request_timeout;
 		this.idle_timeout = idle_timeout;
 		this.idle_timer = undefined;
@@ -13,7 +12,6 @@ export class WebSocketProvider {
 		this.reqs = undefined;
 		this.id = 0;
 	}
-	get chainId() { return this.chain_id; }
 	restart_idle() {
 		if (this.idle_timeout > 0) {
 			if (Object.keys(this.reqs).length == 0) {
@@ -29,7 +27,7 @@ export class WebSocketProvider {
 	}
 	async request(obj) {
 		if (typeof obj !== 'object') throw new TypeError('expected object');
-		await this.connect();
+		await this.connected();
 		const id = ++this.id; 
 		const {reqs, ws} = this; // snapshot
 		this.restart_idle();
@@ -42,7 +40,7 @@ export class WebSocketProvider {
 			ws.send(JSON.stringify({jsonrpc: '2.0', id, ...obj}));
 		});
 	}
-	async connect() {
+	async connected() {
 		let {ws} = this;
 		if (ws === undefined) {
 			let queue = this.ws = []; // change state		 

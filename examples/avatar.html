@@ -282,11 +282,6 @@ function create_error(s, caution = false) {
 	return div;
 }
 
-function set_working(b) {
-	resolve_btn.disabled = b;
-	primary_arrows.classList.toggle('hide', !b);
-}
-
 function parse_keys(s) {
 	return [...new Set(s.split(/\s+/).filter(x => x.length > 0))];
 }
@@ -362,6 +357,11 @@ async function get_ethereum_account() {
 	if (!window_ethereum_available()) return;
 	let v = await ethereum.request({method: 'eth_accounts'});
 	return v[Math.max(0, v.indexOf(ethereum.selectedAddress))];	
+}
+
+function set_working(b) {
+	resolve_btn.disabled = b;
+	primary_arrows.classList.toggle('hide', !b);
 }
 
 function resolve() {
@@ -637,10 +637,10 @@ async function resolve0(output, input) {
 	}
 	
 	if (promises.length > 0) {	
-		primary_arrows.classList.toggle('hide', false);	
+		primary_arrows.classList.remove('hide');
 		await Promise.all(promises); // wont throw
 		if (output.parentNode) {
-			primary_arrows.classList.toggle('hide', true);
+			primary_arrows.classList.add('hide');
 		}
 	}
 }

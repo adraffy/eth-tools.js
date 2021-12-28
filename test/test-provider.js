@@ -5,3 +5,5 @@ console.log(await provider.request({method: 'web3_clientVersion'}));
 
 let better = retry(provider);
 console.log(await better.request({method: 'web3_clientVersion'}));
+
+console.log(await better.request({method: 'eth_chainId'}));
