@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lookup</title>
+</head>
+<body>
+<pre>Loading...</pre>
+<script type="module">	
+import {
+	FetchProvider, retry, 
+	ens_resolve,
+    set_normalizer
+} from '../dist/eth-tools.min.js';
+import {ens_normalize} from '../../ens-normalize.js/dist/ens-normalize.min.js';
+set_normalizer(ens_normalize);
+let provider = retry(new FetchProvider({url: 'https://cloudflare-eth.com/'}));
+const pre = document.querySelector('pre');
+async function run() {
+	let name = window.location.hash.slice(1).trim();
+	if (name.length == 0) {
+		pre.innerHTML = 'Provide a name using location hash: <a href="#bRanTly.eth">example</a>';
+		return;
+	}
+	pre.innerHTML = `Resolving ${name}...`;
+	let resolved = await ens_resolve(provider, name);
+	pre.innerHTML = JSON.stringify(resolved, null, 2);
+}
+await run();
+window.addEventListener('hashchange', run);
+</script>
+</body>
+</html>

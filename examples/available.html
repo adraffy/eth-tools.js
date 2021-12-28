@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Available</title>
+</head>
+<body>
+<pre>Loading...</pre>
+<script type="module">	
+import {
+	FetchProvider, retry, 
+	is_dot_eth_available
+} from '../dist/eth-tools.min.js';
+let provider = retry(new FetchProvider({url: 'https://cloudflare-eth.com/'}));
+const pre = document.querySelector('pre');
+async function run() {
+	let label = window.location.hash.slice(1).trim();
+	if (label.length == 0) {
+		pre.innerHTML = 'Provide a label using location hash: <a href="bob">example</a>';
+		return;
+	}
+	pre.innerHTML = `Checking ${label}...`;
+	pre.innerHTML = JSON.stringify({
+		label,
+		available: await is_dot_eth_available(provider, label) // this does not normalize
+	}, null, 2);
+}
+await run();
+window.addEventListener('hashchange', run);
+</script>
+</body>
+</html>

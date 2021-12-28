@@ -1,0 +1,649 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ENS Avatar &amp; Records</title>
+<style>
+.hide {
+	display: none !important;
+}
+.wrapped {
+	line-break: anywhere;
+}
+button {
+	cursor: pointer;
+}
+.arrows {
+	display: inline-block;
+	background: url('data:image/svg+xml;utf8,%3Csvg%20viewBox%3D%220%200%201000%201000%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cpath%20d%3D%22M990%2C377.5H622.5l137.4-137.4C690.4%2C170.7%2C598.2%2C132.5%2C500%2C132.5c-98.2%2C0-190.4%2C38.2-259.9%2C107.6C170.7%2C309.6%2C132.5%2C401.8%2C132.5%2C500c0%2C98.2%2C38.2%2C190.4%2C107.6%2C259.9c69.4%2C69.4%2C161.7%2C107.6%2C259.9%2C107.6c98.2%2C0%2C190.4-38.2%2C259.9-107.6c5.8-5.8%2C11.4-11.8%2C16.7-17.9l92.2%2C80.7C778.9%2C925.2%2C647%2C990%2C500%2C990C229.4%2C990%2C10%2C770.6%2C10%2C500C10%2C229.4%2C229.4%2C10%2C500%2C10c135.3%2C0%2C257.8%2C54.9%2C346.5%2C143.5L990%2C10V377.5z%22%2F%3E%3C%2Fsvg%3E');
+	background-size: contain;
+	background-repeat: no-repeat;
+	width: 2rem;
+	height: 2rem;
+	animation: spin 2s infinite linear;
+}
+@keyframes spin {
+	from { transform:rotate(0deg);	 }
+	to	 { transform:rotate(360deg); }
+}
+body { 
+	margin: 3rem; 
+	background: #eee;
+	display: flex;
+	flex-direction: column;
+	gap: 1rem;
+}
+header {
+	display: flex;
+	justify-content: space-between;
+}
+h1 {
+	margin: 0;
+}
+#version {
+	text-align: right;
+}
+.row {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	flex-wrap: wrap;
+}
+#input button {
+	align-self: stretch;
+}
+input {
+	flex-grow: 1;
+}
+label {
+	display: flex;
+	align-items: center;
+	flex: 1 420px;
+	gap: 0.5rem;
+}
+#input_field {
+	padding: 0.5rem;
+	flex-grow: 1;
+	font-size: 16pt;
+}
+#resolve_btn {
+	font-size: 16pt;
+	font-weight: bold;
+	align-self: stretch;
+}
+#output {
+	display: flex;
+	flex-direction: column;
+	gap: 1rem;
+}
+#output pre {
+	padding: 1rem;
+	margin: 0;
+	background: #fff;
+	overflow-x: auto;
+	font-family: monospace;
+	white-space: pre-wrap;
+	border: 1px solid #ccc;
+}
+#avatar {
+	display: flex;
+	flex-wrap: nowrap;
+}
+#ownership { 
+	order: -1;
+	align-self: center;
+	padding: 0.5rem 1rem;
+	border: 1px solid #ccc;
+	border-radius: 1rem;
+}
+#ownership button {
+	padding: 0.2rem;
+	font-weight: bold;
+}
+#metadata { order: 1; justify-content: left; }
+#text { order: 2; }
+#contenthash { order: 3; }
+#addr { order: 4; }
+#avatar pre {
+	flex-grow: 1;
+}
+#avatar .avatar {
+	display: flex;
+	padding: 1rem;
+	border: 1px solid #ccc;
+	border-right: 0;
+	flex: 0 0 200px;
+	align-items: center;
+	justify-content: center;
+	flex-direction: column;
+	text-align: center;
+}
+#avatar .arrows {
+	width: 80px;
+	height: 80px;	
+}
+#avatar img {
+	display: block;
+	max-width: 100%;
+}
+.null { color: #888; }
+.owner { background: #cfc; }
+.stolen  { background: #faa; }
+.unknown { background: #ffc; }
+#readme {
+	margin: 0;
+	background: #ffc;
+	padding: 0.75rem 2rem;
+}
+#readme li {
+	padding: 0.25rem;
+}
+.row {
+	justify-content: center;
+}
+#output table {
+	border-collapse: collapse;
+	background: #fff;
+}
+#output td {
+	border: 1px solid #ccc;
+	padding: 0.5rem;
+}
+#output td.key {
+	text-align: right;
+	font-weight: bold;
+	width: 25%;
+}
+#output tr:nth-child(even) {
+	background: #eee;
+}
+#output .error {
+	padding: 0.5rem;
+	background: #fcc;
+}
+@media only screen and (max-width: 800px) {
+	body {
+		margin: 1rem;
+	}
+	input, select, button {
+		font-size: 100%;
+	}
+	#avatar .avatar {
+		flex-basis: 100px;
+	}
+	#input {
+		flex-wrap: wrap;
+		justify-content: flex-end;
+	}
+	#input input {
+		flex-basis: 100%;
+	}
+}
+</style>
+</head>
+<body>
+<header>
+<h1><a href="https://ens.domains/">ENS Avatar &amp; Records</a></h1>
+<a id="version" href="https://github.com/adraffy/eth-tools.js">@adraffy/eth-tools.js</a>
+</header>
+<div id="examples">
+Examples:
+<button data-input="eip155:1/erc1155:0x495f947276749ce646f68ac8c248420045cb7b5e/7474646574401184833521157869553608295992641394225252382269774638325908373505">Avatar String</button>
+<button>raffy.eth (url)</button>
+<button>brantly.eth (erc721)</button>
+<button>nick.eth (erc1155)</button>
+<button>alisha.eth (ipfs)</button>
+<button>👁️‍🗨️.eth (null)</button>
+<button>a.eth (none)</button>
+</div>
+<div id="input" class="row">
+<input id="input_field" size="1" placeholder="Name, Address, or Avatar">
+<div class="arrows hide"></div>
+<button id="link_btn">Copy Link</button>
+<button id="resolve_btn">Fetch</button>
+</div>
+<div class="row">
+<label><code>text</code><input id="text_field" size="1" value="display name email url com.twitter com.github"></label>
+<label><a href="https://github.com/satoshilabs/slips/blob/master/slip-0044.md"><code>addr</code></a><input id="addr_field" size="1" value="BTC 2 XLM XCH"></label>
+</div>
+<ul id="readme">
+<li>Click an <button data-input="nick.eth">Example</button> to see how it works.</li>
+<li>Enter an <a href="#" data-input="brantly.eth">name</a> or an <a href="#" data-input="0x983110309620D911731Ac0932219af06091b6744">0x-prefixed address</a> for lookup.</li>
+<li>Enter an avatar-string like <code><a href="#" class="value" data-input="eip155:1/erc1155:0x495f947276749ce646f68ac8c248420045cb7b5e/7474646574401184833521157869553608295992641394225252382269774638325908373505">eip155:A/ercB:C/D</a></code> to validate it.</li>
+<li><b>Copy Link</b> to get a URL that resolves on page-load.</li>
+</ul>
+<div id="output"></div>
+<script type="module">
+import {
+	FetchProvider, retry,
+	set_normalizer,
+	ens_avatar, parse_avatar,
+	ens_text_record, ens_addr_record, ens_contenthash_record, 
+	hex_from_bytes, is_null_hex
+} from '../dist/eth-tools.min.js';
+
+import {ens_normalize} from '../../ens-normalize.js/dist/ens-normalize.min.js';
+set_normalizer(ens_normalize);
+
+let provider = retry(new FetchProvider({url: 'https://cloudflare-eth.com/'})); 
+
+const primary_arrows = document.querySelector('#input .arrows');
+const input_field = document.querySelector('#input_field');
+const text_field = document.querySelector('#text_field');
+const addr_field = document.querySelector('#addr_field');
+
+let text_formatters = {
+	'email': x => create_link(`mailto:${x}`, x),
+	'com.twitter': x => create_link(`https://twitter.com/${x}`, x),
+	'com.github': x => create_link(`https://github.com/${x}`, x)
+};
+
+input_field.focus();
+resolve_btn.addEventListener('click', resolve);
+for (let f of [input_field, text_field, addr_field]) {
+	f.addEventListener('keydown', e => {
+		if (e.key === 'Enter') {
+			e.stopPropagation();
+			resolve();
+		}
+	});
+}
+document.querySelector('#link_btn').addEventListener('click', () => {
+	navigator.clipboard.writeText(window.location.split('#')[0] + '#' + encodeURIComponent(input_field.value.trim()));
+});
+
+for (let x of document.querySelectorAll('#examples button, [data-input]')) {
+	x.addEventListener('click', e => {
+		e.preventDefault();
+		input_field.value = x.dataset.input ?? x.innerHTML.split(' ')[0];
+		resolve();
+	});
+}
+
+if (window.location.hash.length > 0) {
+	let hash = window.location.hash.slice(1).trim();
+	if (hash) { // we have something
+		input_field.value = decodeURIComponent(hash);
+		resolve();
+	} else { // remove empty hash
+		history.replaceState(null, null, '');
+	}
+}
+window.addEventListener('hashchange', () => {
+	input_field.value = decodeURIComponent(window.location.hash.slice(1).trim());
+	resolve();
+});
+
+function create_error(s, caution = false) {
+	let div = document.createElement('div');
+	div.classList.add('error');
+	div.innerHTML = `❌  ${s}`;
+	return div;
+}
+
+function set_working(b) {
+	resolve_btn.disabled = b;
+	primary_arrows.classList.toggle('hide', !b);
+}
+
+function parse_keys(s) {
+	return [...new Set(s.split(/\s+/).filter(x => x.length > 0))];
+}
+
+function html_escape(s) {
+	return s.replace( /[^0-9a-z ]/iug, x => `&#${x.codePointAt(0)}`);
+}
+
+function create_link(url, text) {
+	let a = document.createElement('a');
+	a.href = url;
+	a.innerHTML = text ?? url;
+	return a;
+}
+
+function replace_ipfs(uri) {
+	return uri.replace(/^ipfs:\/\//, 'https://ipfs.io/ipfs/');
+}
+
+function fix_uri(uri, context) {
+	let url = replace_ipfs(uri);
+	if (url.includes('/ipfs/ipfs/')) {
+		let fixed = url.replaceAll('/ipfs/ipfs/', '/ipfs/');
+		output.append(create_error(`<b>${context} URI</b>: <a href="${url}}">${uri}</a> is likely wrong, using <a href="${fixed}">this</a> instead.`));
+		url = fixed;
+	}
+	return url;
+}
+
+function create_avatar_row() {
+	let arrows = document.createElement('div');
+	arrows.classList.add('arrows');
+	let avatar = document.createElement('div');
+	avatar.classList.add('avatar');
+	avatar.append(arrows);
+	let row = document.createElement('div');
+	row.id = 'avatar';
+	row.append(avatar);
+	return {row, avatar};
+}
+
+function load_image_into(parent, uri) {
+	let http = fix_uri(uri, 'Avatar');
+
+	let a = document.createElement('a');
+	a.href = http;
+	a.title = uri;
+	a.innerHTML = uri;
+	a.classList.add('wrapped');
+	parent.append(a);
+
+	let img = new Image();
+	img.addEventListener('load', () => {
+		parent.innerHTML = '';
+		parent.append(a);
+		a.innerHTML = '';
+		a.append(img);		
+	});
+	img.addEventListener('error', err => {
+		parent.innerHTML = '';
+		parent.append(a);
+		console.log(err);
+		a.innerHTML = err?.message ?? 'Error occurred while loading image';
+	});
+	img.src = http;	
+}
+
+function window_ethereum_available() {
+	return typeof window.ethereum !== 'undefined';
+}
+
+async function get_ethereum_account() {
+	if (!window_ethereum_available()) return;
+	let v = await ethereum.request({method: 'eth_accounts'});
+	return v[Math.max(0, v.indexOf(ethereum.selectedAddress))];	
+}
+
+function resolve() {
+	if (resolve_btn.disabled) return;
+	// replace output, prevent prior promises from colliding
+	let output0 = document.querySelector('#output');
+	let output = document.createElement('div');
+	output0.replaceWith(output);
+	output.id = output0.id;
+	let input = input_field.value.trim();
+	document.querySelector('#readme').classList.toggle('hide', input);
+	if (!input) {
+		document.title = '';
+		window.location = '';
+		return;
+	}
+	document.title = `ENS AR: ${input}`;
+	window.location = '#' + encodeURIComponent(input);
+	set_working(true);
+	resolve0(output, input);
+}
+async function resolve0(output, input) {
+	
+	let text_keys = parse_keys(text_field.value);
+	let addr_keys = parse_keys(addr_field.value).map(s => /^(0x)?\d+$/.test(s) ? parseInt(s) : s);
+	
+	let resolved;
+	let account;
+	try {			
+		if (input.startsWith('eip155:')) { // allow avatar string input
+			account = await get_ethereum_account();
+			resolved = await parse_avatar(input, provider, account);
+		} else {			
+			resolved = await ens_avatar(provider, input);
+		}
+	} catch (err) {
+		output.append(create_error(err.message));
+		console.error(err);
+		console.log(err.cause);
+		return;
+	} finally {
+		set_working(false);
+	}
+	
+	let promises = [];
+
+	// format the avatar
+	let pre = document.createElement('pre');
+	pre.innerHTML = JSON.stringify(resolved, null, 2);
+	switch (resolved.type) {
+		case 'none': {
+			output.append(create_error('<b>Name not registered</b>', pre));
+			return; // nothing more to do
+		}
+		case 'unknown': {
+			output.append(create_error('Invalid avatar format'), pre);
+			break;
+		}
+		case 'null': {
+			let {row, avatar} = create_avatar_row();
+			avatar.classList.add('null');
+			avatar.innerHTML = 'No Avatar';
+			row.append(pre);
+			output.append(row);
+			break;
+		}
+		case 'url': {
+			let {row, avatar} = create_avatar_row();
+			row.append(pre);
+			output.append(row);
+			load_image_into(avatar, resolved.avatar);
+			break;
+		}
+		case 'nft': {
+			let {row, avatar} = create_avatar_row();
+			let {meta_uri, contract, token, owned, chain} = resolved;
+			if (typeof owned === 'number') {
+				avatar.classList.add(owned > 0 ? 'owner' : 'stolen');
+			}
+			row.append(pre);
+			output.append(row);
+
+			switch (chain) {
+				case 1: { // mainnet 
+					let a = create_link(`https://opensea.io/assets/${contract}/${token.dec}`);
+					a.classList.add('wrapped');
+					let div = document.createElement('div');
+					div.classList.add('row');
+					div.innerHTML = '<b>Opensea:</b> ';
+					div.append(a);
+					output.append(div);
+					break;
+				}
+				case 137: { // polygon
+					let a = create_link(`https://opensea.io/assets/matic/${contract}/${token.dec}`);
+					a.classList.add('wrapped');
+					let div = document.createElement('div');
+					div.classList.add('row');
+					div.innerHTML = '<b>Opensea (Polygon):</b> ';
+					div.append(a);
+					output.append(div);
+					break;
+				}
+			}
+
+			if (!meta_uri) {
+				avatar.innerHTML = '';
+				if (chain != 1) {
+					avatar.append(`Contracts on chain ${chain} are not supported by this dapp.`);
+				} else {
+					avatar.append(`Contract returned empty metadata URI`);
+				}
+			} else {
+				promises.push((async () => {
+					let res;
+					let meta_url = fix_uri(meta_uri, 'Metadata');
+					try {
+						res = await fetch(meta_url, {headers: {Origin: 'anonymous'}});
+					} catch (err) {
+						let error = create_error('<b>Metadata blocked by CORS</b>');
+						//row.insertAdjacentElement('afterend', error);
+						output.append(error);
+						try {
+							if (!meta_url.startsWith('http')) throw new Error('wtf protocol');
+							res = await fetch(`/relay.php?${meta_url}`);
+						} catch (err) {
+							error.remove(); 
+							avatar.innerHTML = '';
+							avatar.append(create_link(meta_url, 'Unable to fetch metadata'));
+							return;
+						}
+					}
+					if (res.status != 200) {
+						avatar.innerHTML = '';
+						avatar.append(create_link(meta_url, `Metadata returned HTTP error ${res.status}`));
+						return;
+					}
+					let meta;
+					try {
+						meta = await res.json();
+					} catch (err) {
+						avatar.innerHTML = '';
+						avatar.append(create_link(meta_url, `Metadata is malformed JSON`));
+						return;
+					}
+					if (true) {
+						let pre = document.createElement('pre');
+						pre.id = 'metadata';
+						pre.classList.add('row', 'wrapped');
+						pre.innerHTML = JSON.stringify(meta, null, 2);
+						output.append(pre);
+					}
+					let {image} = meta;
+					if (!image) image = meta.imageUrl;
+					if (!image) {
+						avatar.innerHTML = '';
+						avatar.append(create_link(meta_url, `Metadata missing image`));
+						return;
+					}
+					load_image_into(avatar, image);
+				})());
+			} 
+		}
+	}
+	
+	if (!resolved.name) {
+		if (account) {
+			let div = document.createElement('div');
+			div.id = 'ownership';
+			div.classList.add('row');
+			if (resolved.owned > 0) {
+				div.classList.add('owner');
+				div.innerHTML = '✅ Owned by you';
+			} else {
+				div.classList.add('stolen');
+				div.innerHTML = '❌ Not owned by you';
+			}
+			output.append(div);		
+		} else if (window_ethereum_available()) {
+			let btn = document.createElement('button');
+			btn.innerHTML = 'Check';
+			btn.addEventListener('click', () => {
+				ethereum.request({method: 'eth_requestAccounts'}).then(() => {
+					resolve();
+				}).catch(() => {});			
+			});		
+			let div = document.createElement('div');
+			div.id = 'ownership';
+			div.classList.add('row', 'unknown');
+			div.innerHTML = '⚠️ Ownership Unknown';
+			div.append(btn);
+			output.append(div);			
+		}	
+
+
+	} else {
+		// get text records
+		if (text_keys.length > 0) {
+			promises.push(ens_text_record(provider, resolved, text_keys).then(({text}) => {
+				let table = document.createElement('table');
+				table.id = 'text';
+				for (let [k, v] of Object.entries(text)) {
+					let td_k = document.createElement('td');
+					td_k.classList.add('key');
+					td_k.innerHTML = k;
+					let td_v = document.createElement('td');
+					td_v.classList.add('wrapped');
+					let formatter = text_formatters[k];
+					if (formatter) {
+						td_v.append(formatter(v));
+					} else if (v.includes('://')) {
+						td_v.append(create_link(replace_ipfs(v), v));
+					} else {
+						td_v.innerHTML = v;
+					}
+					let tr = document.createElement('tr');
+					tr.append(td_k, td_v);
+					table.append(tr);
+				}
+				output.append(table);
+			}).catch(err => {
+				let error = create_error(`<b>Text Record Error:</b> ${err.message}`);
+				error.id = 'text';
+				output.append(error);
+			}));
+		}
+			
+		// get address records
+		const ID_addr = 'addr';
+		if (addr_keys.length > 0) {
+			promises.push(ens_addr_record(provider, resolved, addr_keys).then(({addr}) => {
+				let table = document.createElement('table');
+				table.id = ID_addr;
+				let tr_warning = document.createElement('tr');
+				tr_warning.innerHTML = '<td colspan="2" style="background: #ffc;text-align:center">⚠️ Addresses are shown as raw hex data and require encoding</td>';
+				table.append(tr_warning);
+				for (let [k, v] of Object.entries(addr)) {
+					let tr = document.createElement('tr');
+					tr.innerHTML = `<td class="key">${html_escape(k)}</td><td class="wrapped">${hex_from_bytes(v)}</td>`;
+					table.append(tr);
+				}
+				output.append(table);
+			}).catch(err => {
+				let error = create_error(`<b>Address Record Error:</b> ${err.message}`);
+				error.id = ID_addr;
+				output.append(error);
+			}));
+		}
+
+		// get content hash
+		const ID_contenthash = 'contenthash';
+		promises.push(ens_contenthash_record(provider, resolved).then(({contenthash, contenthash_url}) => {
+			if (!contenthash) return;
+			let div = document.createElement('div');
+			div.id = ID_contenthash;
+			div.classList.add('row', 'centered');
+			div.innerHTML = '<b>Contenthash:</b>';
+			if (contenthash_url) {
+				let a = create_link(replace_ipfs(contenthash_url), contenthash_url);
+				a.classList.add('wrapped');
+				div.append(a);
+			} else {
+				let pre = document.createElement('pre');
+				pre.innerHTML = [...contenthash].map(x = x.toString(16).padStart(2, '0')).join(' ');
+				div.append(pre);
+			}
+			output.append(div);
+		}).catch(err => {
+			let error = create_error(`<b>Contenthash Error:</b> ${err.message}`);
+			error.id = ID_contenthash;
+			output.append(error);
+		}));
+	}
+	
+	if (promises.length > 0) {	
+		primary_arrows.classList.toggle('hide', false);	
+		await Promise.all(promises); // wont throw
+		if (output.parentNode) {
+			primary_arrows.classList.toggle('hide', true);
+		}
+	}
+}
+</script>
+</body>
+</html>
