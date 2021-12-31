@@ -27,7 +27,8 @@ export class FetchProvider extends EventEmitter {
 			let retry_delay = 1000;
 			while (true) {
 				try {
-					this._chain_id = await this._request({method: 'eth_chainId'});
+					//await this._request({method: 'web3_clientVersion'});
+					this._chain_id = await this._request({method: 'eth_chainId'});					
 					break;
 				} catch (err) {
 					if (retry > 0 && is_header_bug(err)) { 
@@ -39,7 +40,7 @@ export class FetchProvider extends EventEmitter {
 					throw err;
 				}
 			}
-			this.emit('connect', this._chain_id);
+			this.emit('connect', {chainId: this._chain_id});
 			this._restart_idle();
 		}
 		switch (obj.method) {

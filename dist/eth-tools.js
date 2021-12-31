@@ -873,12 +873,12 @@ class Providers {
 	add_dynamic(provider) {
 		if (!this.queue.some(x => x.provider === provider)) {
 			let rec = {provider, chain_id: null}; // unknown
-			let handler = chainId => {
+			provider.on('connect', ({chainId}) => { 
 				rec.chain_id = parseInt(chainId);
-			};
-			rec.handler = handler;
-			provider.on('connect', handler);
-			provider.on('chainChanged', handler);
+			});
+			provider.on('chainChanged', chainId => {
+				rec.chain_id = parseInt(chainId);
+			});
 			this.queue.unshift(rec); // high priority
 		}
 		return this; // chainable
@@ -1195,7 +1195,7 @@ class WebSocketProvider extends EventEmitter {
 		});
 		this._chain_id = await this._request({method: 'eth_chainId'});
 		// MUST specify the integer ID of the connected chain as a hexadecimal string, per the eth_chainId Ethereum RPC method.
-		this.emit('connect', this._chain_id);
+		this.emit('connect', {chainId: this._chain_id});
 		//console.log('Connected');
 		// handle waiters
 		for (let {ful} of queue) ful();
@@ -1229,7 +1229,8 @@ class FetchProvider extends EventEmitter {
 			let retry_delay = 1000;
 			while (true) {
 				try {
-					this._chain_id = await this._request({method: 'eth_chainId'});
+					//await this._request({method: 'web3_clientVersion'});
+					this._chain_id = await this._request({method: 'eth_chainId'});					
 					break;
 				} catch (err) {
 					if (retry > 0 && is_header_bug(err)) { 
@@ -1241,7 +1242,7 @@ class FetchProvider extends EventEmitter {
 					throw err;
 				}
 			}
-			this.emit('connect', this._chain_id);
+			this.emit('connect', {chainId: this._chain_id});
 			this._restart_idle();
 		}
 		switch (obj.method) {

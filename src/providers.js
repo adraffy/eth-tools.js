@@ -41,12 +41,12 @@ export class Providers {
 	add_dynamic(provider) {
 		if (!this.queue.some(x => x.provider === provider)) {
 			let rec = {provider, chain_id: null}; // unknown
-			let handler = chainId => {
+			provider.on('connect', ({chainId}) => { 
 				rec.chain_id = parseInt(chainId);
-			};
-			rec.handler = handler;
-			provider.on('connect', handler);
-			provider.on('chainChanged', handler);
+			});
+			provider.on('chainChanged', chainId => {
+				rec.chain_id = parseInt(chainId);
+			});
 			this.queue.unshift(rec); // high priority
 		}
 		return this; // chainable

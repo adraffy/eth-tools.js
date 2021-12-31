@@ -153,7 +153,7 @@ export class WebSocketProvider extends EventEmitter {
 		});
 		this._chain_id = await this._request({method: 'eth_chainId'});
 		// MUST specify the integer ID of the connected chain as a hexadecimal string, per the eth_chainId Ethereum RPC method.
-		this.emit('connect', this._chain_id);
+		this.emit('connect', {chainId: this._chain_id});
 		//console.log('Connected');
 		// handle waiters
 		for (let {ful} of queue) ful();
