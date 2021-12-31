@@ -865,13 +865,13 @@ class Providers {
 	}
 	add_static(chain_id, provider) {
 		chain_id = parse_chain_id(chain_id);
-		if (!this.queue.some(x => x.provider === provider)) {
+		if (!this.queue.some(x => x.provider === provider)) { // only add once
 			this.queue.push({chain_id, provider}); // low priority
 		}
 		return this; // chainable
 	}
 	add_dynamic(provider) {
-		if (!this.queue.some(x => x.provider === provider)) {
+		if (!this.queue.some(x => x.provider === provider)) { // only add once
 			let rec = {provider, chain_id: null}; // unknown
 			provider.on('connect', ({chainId}) => { 
 				rec.chain_id = parseInt(chainId);
@@ -1203,7 +1203,7 @@ class WebSocketProvider extends EventEmitter {
 }
 
 class FetchProvider extends EventEmitter {
-	constructor({url, fetch: fetch_api, request_timeout = 30000, idle_timeout = 60000}) {
+	constructor({url, fetch: fetch_api, source, request_timeout = 30000, idle_timeout = 60000}) {
 		if (typeof url !== 'string') throw new TypeError('expected url');
 		if (!fetch_api) {
 			let fetch = globalThis.fetch;
@@ -1218,9 +1218,10 @@ class FetchProvider extends EventEmitter {
 		this._request_timeout = request_timeout|0;
 		this._idle_timeout = idle_timeout|0;
 		this._idle_timer = undefined;
+		this._source = source;
 	}
 	source() {
-		return this.url;
+		return this._source ?? this.url;
 	}
 	async request(obj) {
 		if (typeof obj !== 'object') throw new TypeError('expected object');

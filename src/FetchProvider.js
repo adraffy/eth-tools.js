@@ -1,7 +1,7 @@
 import {is_header_bug} from './providers.js';
 import {EventEmitter} from './EventEmitter.js';
 export class FetchProvider extends EventEmitter {
-	constructor({url, fetch: fetch_api, request_timeout = 30000, idle_timeout = 60000}) {
+	constructor({url, fetch: fetch_api, source, request_timeout = 30000, idle_timeout = 60000}) {
 		if (typeof url !== 'string') throw new TypeError('expected url');
 		if (!fetch_api) {
 			let fetch = globalThis.fetch;
@@ -16,9 +16,10 @@ export class FetchProvider extends EventEmitter {
 		this._request_timeout = request_timeout|0;
 		this._idle_timeout = idle_timeout|0;
 		this._idle_timer = undefined;
+		this._source = source;
 	}
 	source() {
-		return this.url;
+		return this._source ?? this.url;
 	}
 	async request(obj) {
 		if (typeof obj !== 'object') throw new TypeError('expected object');

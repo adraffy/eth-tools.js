@@ -33,13 +33,13 @@ export class Providers {
 	}
 	add_static(chain_id, provider) {
 		chain_id = parse_chain_id(chain_id);
-		if (!this.queue.some(x => x.provider === provider)) {
+		if (!this.queue.some(x => x.provider === provider)) { // only add once
 			this.queue.push({chain_id, provider}); // low priority
 		}
 		return this; // chainable
 	}
 	add_dynamic(provider) {
-		if (!this.queue.some(x => x.provider === provider)) {
+		if (!this.queue.some(x => x.provider === provider)) { // only add once
 			let rec = {provider, chain_id: null}; // unknown
 			provider.on('connect', ({chainId}) => { 
 				rec.chain_id = parseInt(chainId);
