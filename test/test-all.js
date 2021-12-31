@@ -1,4 +1,15 @@
-import './test-abi.js';
-import './test-utils.js';
-import './test-readme.js';
-import './test-ens.js';
+for (let test of [
+	'Uint256',
+	'abi',
+	'base58',
+	'utils',
+	'readme',
+	'ws',
+	'fetch',
+	'ens',
+	'nft'
+]) {	
+	console.log(`=== Test: ${test} ===`.padEnd(60, '='));	
+	await import(`./test-${test}.js`);
+	console.log();
+}

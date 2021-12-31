@@ -1,49 +1,31 @@
-import {
-	ens_resolve,
-	node_from_ens_name,
-	lookup_address,
-	ens_name_for_address,
-	ens_avatar,
-	ens_text_record,
-	ens_addr_record,
-	ens_contenthash_record,
-	ens_pubkey_record,
-	parse_avatar,
-	is_dot_eth_available,
-	lookup_owner
-} from '../ens.js';
-import provider from './nodejs-provider.js';
+import {ENS, parse_avatar, namehash, labelhash} from '../index.js';
+import {WS as provider} from './nodejs-provider.js';
+import {ens_normalize} from '@adraffy/ens-normalize';
 
-console.log(await is_dot_eth_available(provider, 'raffy'));
-console.log(await lookup_owner(provider, 'raffy.eth'));
+console.log(labelhash('eth'));
+console.log(namehash('eth'));
 
-let name = 'brantly.eth';
+let ens = new ENS({provider, ens_normalize});
 
-console.log(node_from_ens_name(name).toString());
-console.log(await ens_resolve(provider, node_from_ens_name(name)));
+console.log(await ens.is_dot_eth_available('brantly'));
 
-let resolved = await ens_resolve(provider, name);
-console.log(resolved);
+let name = await ens.resolve('bRantly.eth');
+console.log(name);
 
-console.log(await lookup_address(provider, resolved));
+console.log(await name.get_address());
+console.log(await name.get_primary());
+console.log(await name.get_avatar());
+console.log(await name.get_owner());
 
-console.log(resolved);
-console.log(await ens_name_for_address(provider, resolved.address));
+console.log(await name.get_texts(['name', 'email', 'com.twitter']));
+console.log(await name.get_addrs(['BTC', 2, 'ETH', 'XLM']));
+console.log(await name.get_content());
+console.log(await name.get_pubkey());
 
-let {avatar} = await ens_avatar(provider, name); // by name
-console.log(avatar);
-console.log(await ens_avatar(provider, resolved));
+console.log(await ens.resolve(name.address));
 
-console.log(await ens_text_record(provider, resolved.address, ['email', 'url', 'avatar']));
+console.log(await parse_avatar(await name.get_text('avatar')));
 
-console.log(await ens_addr_record(provider, name, ['BTC', 2, 'ETH', 'XLM']));
+console.log(await ens.resolve(await name.get_address()));
 
-console.log(await ens_contenthash_record(provider, resolved));
-
-console.log(await ens_pubkey_record(provider, resolved));
-
-console.log(await parse_avatar(avatar));
-console.log(await parse_avatar(avatar, provider));
-console.log(JSON.stringify(await parse_avatar(avatar, provider, avatar.account)));
-
-console.log(await lookup_owner(provider, 'brantly.eth'));
+provider.disconnect();

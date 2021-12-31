@@ -1,4 +1,4 @@
-import {checksum_address, is_checksum_address, is_null_hex} from '../utils.js';
+import {checksum_address, is_checksum_address, is_null_hex} from '../index.js';
 
 let ADDRESSES = [
 	'0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359',

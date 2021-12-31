@@ -14,10 +14,7 @@ function hex_from_bytes(v) {
 // returns Uint8Array
 function bytes_from_hex(s) {
 	if (typeof s !== 'string') throw TypeError('expected string');
-	if (s.startsWith('0x')) {
-		if (s.length == 2) throw new TypeError('expected digits'); // disallow "0x"
-		s = s.slice(2);
-	}
+	if (s.startsWith('0x')) s = s.slice(2); // optional prefix
 	if (s.length & 1) {
 		s = `0${s}`; // zero-pad odd length (rare)
 	}
@@ -415,21 +412,54 @@ function is_multihash(s) {
 	}
 }
 
-class Uint256 {
+function fix_multihash_uri(s) {
+	if (is_multihash(s)) { // just a hash
+		return `ipfs://${s}`;
+	}
+	let match;
+	if (match = s.match(/^ipfs\:\/\/ipfs\/(.*)$/i)) { // fix "ipfs://ipfs/.."
+		return `ipfs://${match[1]}`;
+	}
+	/*
+	let match;
+	if ((match = s.match(/\/ipfs\/([1-9a-zA-Z]{32,})(\/?.*)$/)) && is_multihash(match[1])) {
+		s = `ipfs://${match[1]}${match[2]}`;
+	}
+	*/
+	return s;
+}
+
+class Uint256 {	
+	static wrap(x) { // tries to avoid a copy
+		if (x instanceof Uint256) {
+			return x;
+		} else if (x instanceof Uint8Array) {
+			return new this(left_truncate_bytes(v, 32, false));
+		} else if (Number.isSafeInteger(x)) {
+			return this.from_number(x);
+		} else if (typeof x === 'string') {
+			return this.from_str(x);	
+		} else {
+			throw new TypeError(`not Uint256-like: ${x}`);
+		}
+	}
 	static zero() {
 		return new this(new Uint8Array(32));
 	}
 	static from_number(i) {
 		return this.zero().set_number(i);
 	}
-	static from_bytes(v) { 
+	static from_bytes(v) { // this copies
 		return new this(left_truncate_bytes(v, 32));
+	}	
+	static from_str(s) { // this works like parseInt
+		return s.startsWith('0x') ? this.from_hex(s) : this.from_dec(s);
 	}
 	static from_hex(s) {
 		return this.from_bytes(bytes_from_hex(s));
 	}
 	static from_dec(s) {
-		if (!/^[0-9]+$/.test(s)) throw new TypeError('expected decimal digits');
+		if (!/^[0-9]+$/.test(s)) throw new TypeError(`expected decimal digits: ${s}`);
 		let n = s.length;
 		if (n < 10) this.from_number(parseInt(s, 10));
 		let v = new Uint8Array(Math.max(32, n));
@@ -454,10 +484,8 @@ class Uint256 {
 		}
 		return new this(v.slice(0, 32));
 	}
-	static from_str(s) { // this works like parseInt
-		return s.startsWith('0x') ? this.from_hex(s) : this.from_dec(s);
-	}
-	// note: this does not copy!!!		
+	// this should not be used directly
+	// warning: this does not copy!
 	constructor(v) {
 		if (!(v instanceof Uint8Array)) throw new TypeError('expected bytes');
 		if (v.length != 32) throw new TypeError('expected 32 bytes');
@@ -466,34 +494,58 @@ class Uint256 {
 	clone() {
 		return new this.constructor(this.bytes.slice());
 	}
-	compare(v) {
-		if (!(v instanceof Uint256)) throw new TypeError('expected Uint256');
-		return compare_arrays(this.bytes, v.bytes);	
+	compare(x) {
+		return compare_arrays(this.bytes, this.constructor.wrap(x).bytes); // throws
 	}
-	set_number(i) {
-		set_bytes_to_unsigned(this.bytes, i);
+	set_number(i) {	 
+		set_bytes_to_number(this.bytes, i); // throws
+		return this;
+	}
+	add(x) {
+		let other = this.constructor.wrap(x).bytes; // throws
+		let {bytes} = this;
+		let carry = 0;
+		for (let i = 31; i >= 0; i--) {
+			let sum = bytes[i] + other[i] + carry;
+			bytes[i] = sum;
+			carry = sum >> 8;
+		}
+		return this;
+	}
+	not() {
+		this.bytes.forEach((x, i, v) => v[i] = ~x);
 		return this;
 	}
 	get number() {
-		return unsigned_from_bytes(this.bytes);
+		let {bytes} = this;
+		if (bytes[0] == 255) { // safe because 256 - 8 > 53
+			return -(1 + unsigned_from_bytes(bytes.map(x => ~x)));
+		} else {
+			return unsigned_from_bytes(bytes);
+		}
 	}
-	get hex() {
-		return '0x' + hex_from_bytes(this.bytes);
+	get unsigned() { return unsigned_from_bytes(this.bytes); }
+	get hex() { return '0x' + hex_from_bytes(this.bytes); }
+	get dec() { return this.digit_str(10); }	
+	digit_str(radix, lookup = '0123456789abcdefghjiklmnopqrstuvwxyz') {
+		if (radix > lookup.length) throw new RangeError(`radix larger than lookup: ${x}`);
+		return this.digits(radix).map(x => lookup[x]).join('');
 	}
-	get dec() {
+	digits(radix) {
+		if (radix < 2) throw new RangeError(`radix must be 2 or more: ${radix}`);
 		let digits = [0];
 		for (let x of this.bytes) {
 			for (let i = 0; i < digits.length; ++i) {
 				let xx = (digits[i] << 8) | x;
-				digits[i] = xx % 10;
-				x = (xx / 10) | 0;
+				digits[i] = xx % radix;
+				x = (xx / radix) | 0;
 			}
 			while (x > 0) {
-				digits.push(x % 10);
-				x = (x / 10) | 0;
+				digits.push(x % radix);
+				x = (x / radix) | 0;
 			}
 		}
-		return String.fromCharCode(...digits.reverse().map(x => 0x30 + x));
+		return digits.reverse();
 	}
 	toJSON() {
 		return this.hex;
@@ -517,88 +569,32 @@ function unsigned_from_bytes(v) {
 }
 
 // (Uint8Array, number)
-function set_bytes_to_unsigned(v, i) {
-	if (!Number.isSafeInteger(i)) throw new RangeError('overflow');	
-	if (i < 0) throw new RangeError('underflow'); 	
-	for (let pos = v.length - 1; pos >= 0; pos--) {
-		v[pos] = i;
-		i = Math.floor(i / 256); // cannot use shifts since 32-bit
+// cannot use bitwise due to 32-bit truncation
+function set_bytes_to_number(v, i) {
+	if (!Number.isSafeInteger(i)) throw new RangeError(`expected integer: ${i}`);	
+	if (i < 0) {
+		i = -(i+1);
+		for (let pos = v.length - 1; pos >= 0; pos--) {
+			v[pos] = ~(i & 0xFF);
+			i = Math.floor(i / 256); 
+		}
+	} else {
+		for (let pos = v.length - 1; pos >= 0; pos--) {
+			v[pos] = (i & 0xFF);
+			i = Math.floor(i / 256); 
+		}
 	}
 }
 
 // return exactly n-bytes
 // this always returns a copy
-function left_truncate_bytes(v, n) {
+function left_truncate_bytes(v, n, copy_when_same = true) {
 	let {length} = v;
-	if (length == n) return v.slice();
+	if (length == n) return copy_when_same ? v.slice() : v;
 	if (length > n) return v.slice(n - length); // truncate
 	let copy = new Uint8Array(n);
 	copy.set(v, n - length); // zero pad
 	return copy;
-}
-
-// parse an arbitrarily-sized hex/dec integer
-// return null on parse failure
-// return null on overflow
-// return exactly n-bytes
-function bytes_from_digits_or_null(s, n) {
-	try {
-		let v = parse_bytes_from_digits(s);
-		if (v.length > n) return null; // overflow
-		return left_truncate_bytes(v, n)
-	} catch (ignored) {
-		return null;
-	}
-}
-
-function drop_leading_zeros(v) {
-	let {length} = v;
-	let i = 0;
-	while (i < length && v[i] == 0) i++;
-	return v.subarray(i);
-}
-
-function parse_bytes_from_digits(s) {
-	s = s.trim();
-	if (s.startsWith('0x')) return drop_leading_zeros(bytes_from_hex(s));
-	let {length} = s;
-	if (length == 0) throw new Error('expected digits');
-	let n = (length + 1) >> 1;
-	let v = new Uint8Array(n);
-	let w = n;
-	for (let j = 0; j < length; j++) {
-		let carry = s.charCodeAt(j) - 48;
-		if (carry < 0 || carry > 9) throw new Error('expected decimal digits');
-		for (let i = n - 1; i >= w; i--) {
-			carry += v[i] * 10;
-			v[i] = carry;
-			carry >>= 8;
-		}
-		while (carry > 0) {
-			v[--w] = carry;
-			carry >>= 8;
-		}
-	}
-	return v.subarray(w);
-}
-
-// convenience for making an eth_call
-// return an ABIDecoder
-// https://eth.wiki/json-rpc/API#eth_call
-// https://www.jsonrpc.org/specification
-// https://docs.soliditylang.org/en/latest/abi-spec.html
-async function eth_call(provider, tx, enc = null, tag = 'latest') {
-	if (typeof provider !== 'object') throw new TypeError('expected provider');
-	if (typeof tx === 'string') tx = {to: tx};
-	if (enc instanceof ABIEncoder) tx.data = enc.build_hex();
-	try {
-		return ABIDecoder.from_hex(await provider.request({method: 'eth_call', params:[tx, tag]}));
-	} catch (err) {
-		if (err.code == -32000 && err.message === 'execution reverted') {
-			err.reverted = true;
-		}
-		throw err;
-	}
 }
 
 class ABIDecoder {
@@ -608,7 +604,7 @@ class ABIDecoder {
 		this.pos = 0;
 	}
 	get remaining() { return this.buf.length - this.pos; }
-	read(n) {
+	read_bytes(n) {  // THIS DOES NOT COPY
 		let {pos, buf} = this;
 		let end = pos + n;
 		if (end > buf.length) throw new RangeError('buffer overflow');
@@ -616,17 +612,7 @@ class ABIDecoder {
 		this.pos = end;
 		return v;
 	}
-	read_byte() {
-		let {pos, buf} = this;
-		if (pos >= buf.length) throw new RangeError('buffer overflow');
-		this.pos = pos + 1;
-		return buf[pos];
-	}
-	boolean() { return this.number() > 0; }	
-	number(n = 32) { return unsigned_from_bytes(this.read(n)); }
-	uint256() { return new Uint256(this.read(32)); }
-	string() { return utf8_from_bytes(this.memory()); }
-	memory() {
+	read_memory() { // THIS DOES NOT COPY
 		let pos = this.number();
 		let end = pos + 32;
 		let {buf} = this;
@@ -637,9 +623,22 @@ class ABIDecoder {
 		if (end > buf.length) throw new RangeError('buffer overflow');
 		return buf.subarray(pos, end);
 	}
+	read_byte() {
+		let {pos, buf} = this;
+		if (pos >= buf.length) throw new RangeError('buffer overflow');
+		this.pos = pos + 1;
+		return buf[pos];
+	}
+	// these all effectively copy 
+	bytes(n) { return this.read_bytes(n).slice(); }
+	boolean() { return this.number() > 0; }	
+	number(n = 32) { return unsigned_from_bytes(this.read_bytes(n)); }
+	uint256() { return new Uint256(this.bytes(32)); } 
+	string() { return utf8_from_bytes(this.read_memory()); }	
+	memory() { return this.read_memory().slice(); }
 	addr(checksum = true) {
-		if (this.number(12) != 0) throw new TypeError('expected zero');
-		let v = this.read(20);
+		if (this.read_bytes(12).some(x => x > 0)) throw new TypeError('invalid address: expected zero');
+		let v = this.read_bytes(20);
 		let addr = hex_from_bytes(v);
 		return checksum ? checksum_address(addr) : `0x${addr}`; 
 	}
@@ -658,20 +657,27 @@ class ABIDecoder {
 		return acc;
 	}
 }
+
+function bytes4_from_method(x) {
+	if (x.includes('(')) {
+		return keccak().update(x).bytes.subarray(0, 4);
+	} else {
+		try {
+			let v = x instanceof Uint8Array ? x : bytes_from_hex(x);
+			if (v.length != 4) throw new Error('expected 4 bytes');
+			return v;
+		} catch (err) {
+			throw new Error(`method ${x} should be a signature or 8-char hex`);
+		}
+	}
+}
+
 class ABIEncoder {
 	static method(method) {
-		if (typeof method !== 'string') throw new TypeError('expected string');
-		let N = 4;
-		let enc = new ABIEncoder(N); // method signature doesn't contribute to offset
-		if (method.includes('(')) {
-			enc.add_bytes(keccak().update(method).bytes.subarray(0, N));
-		} else {
-			enc.add_hex(method);
-			if (enc.pos != N) throw new Error('method should be a signature or 8-char hex');
-		}
-		return enc;
+		// method signature doesn't contribute to offset
+		return new ABIEncoder(4).add_bytes(bytes4_from_method(method)); 
 	}
-	constructor(offset = 0, capacity = 256, packed = false) {
+	constructor(offset = 0, capacity = 256) { //, packed = false) {
 		if (!Number.isSafeInteger(capacity) || capacity < 1) throw new TypeError('expected positive initial capacity');
 		this.buf = new Uint8Array(capacity);
 		this.pos = 0;
@@ -692,7 +698,7 @@ class ABIEncoder {
 			this.alloc(len);
 			let {buf} = this;
 			for (let [off, v] of tails) {
-				set_bytes_to_unsigned(buf.subarray(off, off + 32), pos - offset); // global offset
+				set_bytes_to_number(buf.subarray(off, off + 32), pos - offset); // global offset
 				buf.set(v, pos);
 				pos += v.length;
 			}
@@ -701,7 +707,7 @@ class ABIEncoder {
 	}
 	// return an UInt8Array view-slice into the buffer
 	alloc(n) {
-		if (typeof n !== 'number' || n < 1) throw new TypeError('expected positive size');
+		if (!Number.isSafeInteger(n) || n < 1) throw new TypeError('expected positive size');
 		let {buf, pos} = this;
 		let end = pos + n;
 		if (end > buf.length) {
@@ -726,7 +732,7 @@ class ABIEncoder {
 				buf.set(i.bytes, n - 32);
 			}
 		} else {
-			set_bytes_to_unsigned(this.alloc(n), i);
+			set_bytes_to_number(this.alloc(n), i);
 		}
 		return this; // chainable
 	}
@@ -735,13 +741,13 @@ class ABIEncoder {
 		let {pos} = this; // remember offset
 		this.alloc(32); // reserve spot
 		let tail = new Uint8Array((v.length + 63) & ~31); // len + bytes + 0* [padded]
-		set_bytes_to_unsigned(tail.subarray(0, 32), v.length);
+		set_bytes_to_number(tail.subarray(0, 32), v.length);
 		tail.set(v, 32);
 		this.tails.push([pos, tail]);
 		return this; // chainable
 	}
-	addr(x) {
-		let v = bytes_from_hex(x); // throws
+	addr(s) {
+		let v = bytes_from_hex(s); // throws
 		if (v.length != 20) throw new TypeError('expected address');
 		this.alloc(32).set(v, 12);
 		return this; // chainable
@@ -825,179 +831,510 @@ function bytes_from_base58$1(s) {
 	return v.subarray(0, n);
 }
 
-// minimal window.ethereum provider
-// https://docs.metamask.io/guide/ethereum-provider.html
-class FetchProvider {
-	constructor({url, chain_id = 1, fetch: fetch_api}) {
-		if (typeof url !== 'string') throw new TypeError('expected url');
-		if (!fetch_api) fetch_api = globalThis.fetch.bind(globalThis); 
-		if (typeof fetch_api !== 'function') throw new TypeError('fetch should be a function');
-		this.url = url;	
-		this.fetch_api = fetch_api;
-		this.chain_id = chain_id;
-		this.id = 0;
+// returns provider chain id
+async function chain_id_from_provider(provider) {
+	return parseInt(await provider.request({method: 'eth_chainId'}));
+}
+
+// returns string regarding provider construction
+async function source_from_provider(provider) {
+	let source = provider.source?.();
+	if (source) return source;
+	if (provider.isMetaMask) return 'MetaMask';
+	return 'Unknown';
+}
+
+function parse_chain_id(x) {
+	if (typeof x === 'string') x = parseInt(x);
+	if (!Number.isSafeInteger(x)) throw new TypeError(`expected chain: ${x}`);
+	return x;
+}
+
+class Providers {
+	static from_map(map) {
+		if (typeof map !== 'object') throw new TypeError('expected object');
+		let p = new Providers();
+		for (let [k, v] of Object.entries(map)) {
+			p.add_static(k, v);
+		}
+		return p;
 	}
-	get chainId() { return this.chain_id; }
-	async request(obj) {
-		if (typeof obj !== 'object') throw new TypeError('expected object');
-		let res = await this.fetch_api(this.url, {
-			method: 'POST',
-			body: JSON.stringify({...obj, jsonrpc: '2.0', id: ++this.id})
+	constructor({cooldown = 30000} = {}) {
+		this.queue = [];
+		this.cooldown = cooldown;
+	}
+	add_static(chain_id, provider) {
+		chain_id = parse_chain_id(chain_id);
+		if (!this.queue.some(x => x.provider === provider)) {
+			this.queue.push({chain_id, provider}); // low priority
+		}
+		return this; // chainable
+	}
+	add_dynamic(provider) {
+		if (!this.queue.some(x => x.provider === provider)) {
+			let rec = {provider, chain_id: null}; // unknown
+			let handler = chainId => {
+				rec.chain_id = parseInt(chainId);
+			};
+			rec.handler = handler;
+			provider.on('connect', handler);
+			provider.on('chainChanged', handler);
+			this.queue.unshift(rec); // high priority
+		}
+		return this; // chainable
+	}
+	disconnect() {
+		for (let {provider} of this.queue) {
+			provider.disconnect?.();
+		}
+	}
+	async find_provider(chain_id, required = false, dynamic = true) {
+		if (chain_id !== undefined && !Number.isSafeInteger(chain_id)) {
+			throw new TypeError(`expected chain_id integer: ${chain_id}`);
+		}
+		if (dynamic) {
+			await Promise.all(this.queue.filter(x => x.chain_id === null).map(async rec => {
+				try {
+					rec.chain_id = await chain_id_from_provider(rec.provider);
+				} catch (err) {
+					rec.chain_id = false;
+					rec.cooldown = setTimeout(() => {
+						rec.chainId = null;
+					}, this.cooldown);
+				}
+			}));
+		}
+		let rec = this.queue.find(rec => rec.chain_id === chain_id);
+		if (!rec && required) throw new Error(`No provider for chain ${chain_id}`);
+		return rec?.provider;
+	}
+	view(chain_id) {
+		chain_id = parse_chain_id(chain_id);
+		let get_provider = async (...a) => {
+			return this.find_provider(chain_id, ...a);
+		};
+		return new Proxy(this, {
+			get: (target, prop) => {
+				switch (prop) {
+					case 'isProviderView': return true;
+					case 'get_provider': return get_provider;
+					default: return target[prop];
+				}
+			}
 		});
-		if (res.status !== 200) throw new Error(`provider fetch error: ${res.status}`);
-		let json;
-		try {
-			json = await res.json();
-		} catch (cause) {
-			throw new Error('expected json', {cause});
-		}
-		let {error} = json;
-		if (error) {
-			console.log(json);
-			let err = new Error(error.message ?? 'unknown error');
-			err.code = error.code;
-			throw err;
-		}
-		return json.result;
 	}
 }
 
-class WebSocketProvider {
-	constructor({url, chain_id, WebSocket: ws_api, request_timeout = 10000, idle_timeout = 500}) {
+// detect-provider is way too useless to require as a dependancy 
+// https://github.com/MetaMask/detect-provider/blob/main/src/index.ts
+async function determine_window_provider({fix = true, timeout = 5000} = {}) {
+	return new Promise((ful, rej) => {
+		let timer, handler;
+		const EVENT = 'ethereum#initialized';
+		if (check()) return;
+		timer = setTimeout(() => {
+			globalThis?.removeEventListener(EVENT, handler);
+			check() || rej(new Error(`No window.ethereum`));
+		}, timeout|0);
+		handler = () => {
+			clearTimeout(timer);		
+			globalThis?.removeEventListener(EVENT, handler);
+			check() || rej(new Error('jebaited'));
+		};
+		globalThis?.addEventListener(EVENT, handler);
+		function check() {
+			let e = globalThis.ethereum;
+			if (e) {
+				ful(fix ? retry(e) : e);
+				return true;
+			}
+		}
+	});
+}
+
+// return true if the request() error is due to bug
+// this seems to be an geth bug (infura, cloudflare, metamask)
+// related to not knowing the chain id
+function is_header_bug(err) {
+	return err.code === -32000 && err.message === 'header not found';
+}
+
+// fix the bug above
+function retry(provider, {retry = 2, delay = 1000} = {}) {
+	if (typeof retry !== 'number' || retry < 1) throw new TypeError('expected retry > 0');
+	if (typeof delay !== 'number' || delay < 0) throw new TypeError('expected delay >= 0');
+	if (!provider) return;
+	async function request(obj) {
+		try {
+			return await provider.request(obj);
+		} catch (err) {
+			if (!is_header_bug(err)) throw err;
+			// make a new request that isn't dangerous
+			// until we run out of tries or it succeeds
+			let n = retry;
+			while (true) {
+				try {
+					await provider.request({method: 'eth_chainId'});
+					break;
+				} catch (retry_err) {
+					if (!is_header_bug(retry_err) && --n == 0) throw err;
+				}
+			}
+			// then issue the request again
+			return provider.request(obj);
+		}
+	}
+	return new Proxy(provider, {
+		get: function(obj, prop) {
+			return prop === 'request' ? request : obj[prop];
+		}
+	});
+}
+
+// https://eips.ethereum.org/EIPS/eip-1193
+// The Provider MUST implement the following event handling methods:
+// * on
+// * removeListener
+// These methods MUST be implemented per the Node.js EventEmitter API.
+// * https://nodejs.org/api/events.html
+//
+class EventEmitter {
+	constructor() {
+		this.__events = {};
+	}
+	// Synchronously calls each of the listeners registered for the event named eventName, 
+	// in the order they were registered, passing the supplied arguments to each.
+	// Returns: <boolean>
+	// Returns true if the event had listeners, false otherwise.
+	emit(event, ...args) {
+		let bucket = this.__events[event];
+		if (!bucket) return false;
+		for (let listener of bucket) listener(...args);
+		return true;		
+	}
+	// Adds the listener function to the end of the listeners array for the event named eventName. 
+	// No checks are made to see if the listener has already been added. 
+	// Multiple calls passing the same combination of eventName and listener 
+	// will result in the listener being added, and called, multiple times.
+	// Returns: <EventEmitter>
+	on(event, listener) {
+		let bucket = this.__events[event];
+		if (!bucket) this.__events[event] = bucket = [];
+		bucket.push(listener);
+		return this;
+	}
+	// Removes the specified listener from the listener array for the event named eventName.
+	// removeListener() will remove, at most, one instance of a listener from the listener array
+	// Returns: <EventEmitter>
+	removeListener(event, listener) {
+		let bucket = this.__events[event];
+		if (bucket) {
+			let i = bucket.indexOf(listener);
+			if (i >= 0) {
+				bucket.splice(i, 1);
+				if (bucket.length == 0) {
+					delete this.__events[event];
+				}
+			}
+		}
+		return this;
+	}
+}
+
+class WebSocketProvider extends EventEmitter {
+	constructor({url, WebSocket: ws_api, request_timeout = 30000, idle_timeout = 60000}) {
 		if (typeof url !== 'string') throw new TypeError('expected url');
 		if (!ws_api) ws_api = globalThis.WebSocket;
 		if (!ws_api) throw new Error('unknown WebSocket implementation');
+		super();
 		this.url = url;
-		this.ws_api = ws_api;
-		this.chain_id = chain_id;
-		this.request_timeout = request_timeout;
-		this.idle_timeout = idle_timeout;
-		this.idle_timer = undefined;
-		this.ws = undefined;
-		this.reqs = undefined;
-		this.id = 0;
+		this._ws_api = ws_api;
+		this._request_timeout = request_timeout;
+		this._idle_timeout = idle_timeout;
+		this._idle_timer = undefined;
+		this._ws = undefined;
+		this._terminate = undefined;
+		this._reqs = undefined;
+		this._subs = new Set();
+		this._id = undefined;
+		this._chain_id = undefined;
 	}
-	get chainId() { return this.chain_id; }
-	restart_idle() {
-		if (this.idle_timeout > 0) {
-			if (Object.keys(this.reqs).length == 0) {
-				let {ws} = this; // snapshot
-				this.idle_timer = setTimeout(() => {
-					//console.log('Disconnect: idle');
-					ws.close();	
-				}, this.idle_timeout);
-			} else {
-				clearTimeout(this.idle_timer);
-			}
+	source() {
+		return this.url;
+	}
+	// idle timeout is disabled while subscribed
+	get idle_timeout() { return this._idle_timeout; }
+	set idle_timeout(t) {
+		this.idle_timeout = t|0;
+		this._restart_idle();
+	}
+	disconnect() {
+		this._terminate?.(new Error('Forced disconnect'));
+	}
+	_restart_idle() {
+		clearTimeout(this._idle_timer);
+		if (this._idle_timeout > 0 && (this._subs.size == 0 && Object.keys(this._reqs).length == 0)) {
+			const {_terminate} = this; // snapshot
+			this._idle_timer = setTimeout(() => {
+				_terminate(new Error('Idle timeout'));
+			}, this._idle_timeout);
 		}
 	}
 	async request(obj) {
 		if (typeof obj !== 'object') throw new TypeError('expected object');
-		await this.connect();
-		const id = ++this.id; 
-		const {reqs, ws} = this; // snapshot
-		this.restart_idle();
+		let {method, params} = obj;
+		if (typeof method !== 'string') throw new Error(`expected method`);
+		if (params && !Array.isArray(params)) throw new Error('expected params array');
+		await this.ensure_connected();
+		switch (method) {
+			case 'eth_chainId': return this._chain_id; // avoid rpc
+			case 'eth_subscribe': return this._request(obj).then(ret => {
+				this._subs.add(ret);
+				clearTimeout(this._idle_timer);
+				return ret;
+			});
+			case 'eth_unsubscribe': return this._request(obj).then(ret => {
+				this._subs.delete(params[0]);
+				this._restart_idle();
+				return ret;
+			});
+			default: return this._request(obj);
+		}
+	}
+	// private:
+	// assumes ws is connected
+	// does not intercept method
+	_request(obj) {
+		const id = ++this._id; 
+		const {_reqs, _ws, _request_timeout: t} = this; // snapshot
+		clearTimeout(this._idle_timer);
 		return new Promise((ful, rej) => {
-			let timer = setTimeout(() => {
-				delete reqs[id];
+			let timer = t > 0 ? setTimeout(() => {
+				delete _reqs[id];
+				this._restart_idle();
 				rej(new Error('Timeout'));
-			}, this.request_timeout);
-			reqs[id] = {timer, ful, rej};
-			ws.send(JSON.stringify({jsonrpc: '2.0', id, ...obj}));
+			}, t) : undefined;
+			_reqs[id] = {timer, ful, rej};
+			_ws.send(JSON.stringify({jsonrpc: '2.0', id, ...obj}));
 		});
 	}
-	async connect() {
-		let {ws} = this;
-		if (ws === undefined) {
-			let queue = this.ws = []; // change state		 
-			let s = new this.ws_api(this.url);
-			//console.log('Connecting...');
-			let timer, handler;
-			try {  
-				await new Promise((ful, rej) => {
-					handler = () => {
-						s.removeEventListener('error', rej); 
-						s.removeEventListener('close', rej);
-						ful();						
-					};
-					timer = setTimeout(() => rej(new Error('Timeout')), this.request_timeout);
-					s.addEventListener('close', rej);
-					s.addEventListener('error', rej);
-					s.addEventListener('open', handler, {once: true});
+	async ensure_connected() {
+		let {_ws} = this;
+		if (Array.isArray(_ws)) { // currently connecting
+			return new Promise((ful, rej) => {
+				_ws.push({ful, rej});
+			});
+		} else if (_ws) { // already connected
+			return;
+		}
+		const queue = this._ws = []; // change state
+		const ws = new this._ws_api(this.url); 
+		//console.log('Connecting...');
+		try {  
+			await new Promise((ful, rej) => {
+				this._terminate = rej;
+				let timer = setTimeout(() => rej(new Error('Timeout')), this._request_timeout);
+				ws.addEventListener('close', rej);
+				ws.addEventListener('error', rej);
+				ws.addEventListener('open', () => {
+					ws.removeEventListener('error', rej); 
+					ws.removeEventListener('close', rej);
+					clearTimeout(timer);
+					ful();
 				});
-			} catch (err) {
-				//console.log(`Connect error: ${err}`);
-				this.ws = undefined; // reset state
-				s.removeEventListener('open', handler);
-				for (let {rej} of queue) rej(err);
-				s.close();
-				throw err;
-			} finally {
-				clearTimeout(timer);
-			} 
-			//console.log('Connected');
-			this.ws = s; // connected state
-			this.id = 0;
-			this.reqs = {};
-			// setup error handlers
-			let die = (err) => {
-				if (s !== this.ws) return;
-				this.ws = undefined; // reset state
-				for (let {rej} of Object.values(this.reqs)) rej(err);
-				this.reqs = undefined;
-				clearTimeout(this.idle_timer);
-			};
-			s.addEventListener('close', () => die(new Error('Unexpected close')));
-			s.addEventListener('error', die);
-			// process waiters
-			for (let {ful} of queue) ful();
-			// handle requests
-			let {reqs} = this; // snapshot
-			s.addEventListener('message', ({data}) => {
-				let json = JSON.parse(data);
-				let request = reqs[json.id];
+			});
+		} catch (err) {
+			ws.close();
+			this._ws = undefined; // reset state
+			this._terminate = undefined;
+			for (let {rej} of queue) rej(err);
+			this.emit('connect-error', err);
+			throw err;
+		}
+		//console.log('Handshaking...');
+		this._ws = ws; // change state
+		this._id = 0;
+		let reqs = this._reqs = {};
+		// setup error handlers
+		let close_handler;
+		let error_handler = this._terminate = (err) => {
+			ws.removeEventListener('close', close_handler);
+			ws.removeEventListener('error', error_handler);
+			ws.close();
+			this._ws = undefined; // reset state
+			this._terminate = undefined;
+			this._reqs = undefined;
+			this._id = undefined;
+			this._chain_id = undefined;
+			this._subs.clear();
+			clearTimeout(this._idle_timer);
+			for (let {rej} of Object.values(reqs)) rej(err);
+			this.emit('disconnect', err);
+		};
+		close_handler = () => error_handler(new Error('Unexpected close'));
+		ws.addEventListener('close', close_handler);
+		ws.addEventListener('error', error_handler);
+		ws.addEventListener('message', ({data}) => {
+			let json = JSON.parse(data); // throws
+			let {id} = json;
+			if (id === undefined) {
+				let {method, params: {subscription, result}} = json;
+				this.emit('message', {type: method, data: {subscription, result}});
+			} else {
+				let request = reqs[id];	
 				if (!request) return;
-				this.restart_idle();
 				delete reqs[json.id];
 				clearTimeout(request.timer);
+				this._restart_idle();
 				let {result, error} = json;
 				if (result) return request.ful(result);
 				let err = new Error(error?.message ?? 'Unknown Error');
 				if ('code' in error) err.code = error.code;
 				request.rej(err);
-			});
-			this.restart_idle();
-		} else if (Array.isArray(ws)) { // already connecting
-			await new Promise((ful, rej) => {
-				ws.push({ful, rej});
-			});
-		}
+			}
+		});
+		this._chain_id = await this._request({method: 'eth_chainId'});
+		// MUST specify the integer ID of the connected chain as a hexadecimal string, per the eth_chainId Ethereum RPC method.
+		this.emit('connect', this._chain_id);
+		//console.log('Connected');
+		// handle waiters
+		for (let {ful} of queue) ful();
 	}
 }
 
-function retry(provider, {retry = 2, delay = 1000} = {}) {
-	if (typeof retry !== 'number' || retry < 1) throw new TypeError('expected retry > 0');
-	if (typeof delay !== 'number' || delay < 0) throw new TypeError('expected delay >= 0');
-	async function unfucked(args) {
-		let n = 0;
-		while (true) {
-			try {
-				return await provider.request(args);
-			} catch (err) {
-				if (err.code === -32000 && err.message === 'header not found' && n++ < retry) { 
-					// this seems to be an geth bug (infura, cloudflare, metamask)
-					await new Promise(ful => setTimeout(ful, delay));
-					continue;
+class FetchProvider extends EventEmitter {
+	constructor({url, fetch: fetch_api, request_timeout = 30000, idle_timeout = 60000}) {
+		if (typeof url !== 'string') throw new TypeError('expected url');
+		if (!fetch_api) {
+			let fetch = globalThis.fetch;
+			if (!fetch) throw new TypeError(`unable to find fetch()`);
+			fetch_api = fetch.bind(globalThis);
+		}
+		super();
+		this.url = url;	
+		this._fetch_api = fetch_api;
+		this._id = 0;
+		this._chain_id = undefined;
+		this._request_timeout = request_timeout|0;
+		this._idle_timeout = idle_timeout|0;
+		this._idle_timer = undefined;
+	}
+	source() {
+		return this.url;
+	}
+	async request(obj) {
+		if (typeof obj !== 'object') throw new TypeError('expected object');
+		if (!this._idle_timer) {
+			let retry = 2;
+			let retry_delay = 1000;
+			while (true) {
+				try {
+					this._chain_id = await this._request({method: 'eth_chainId'});
+					break;
+				} catch (err) {
+					if (retry > 0 && is_header_bug(err)) { 
+						await new Promise(ful => setTimeout(ful, retry_delay));
+						retry--;
+						continue;					
+					}
+					this.emit('connect-error', err);
+					throw err;
 				}
-				throw err;
 			}
+			this.emit('connect', this._chain_id);
+			this._restart_idle();
+		}
+		switch (obj.method) {
+			case 'eth_chainId': return this._chain_id; // fast
+			case 'eth_subscribe': 
+			case 'eth_unsubscribe': throw new Error(`${obj.method} not supported by FetchProvider`);
+		}
+		try {
+			let ret = await this._request(obj);
+			this._restart_idle();
+			return ret;
+		} catch (err) {
+			this._terminate(err);
+			throw err;
 		}
 	}
-	return new Proxy(provider, {
-		get: function(obj, prop) {
-			return prop === 'request' ? unfucked : obj[prop];
+	_restart_idle() {
+		clearTimeout(this._idle_timer);			
+		this._idle_timer = this._idle_timeout > 0 ? setTimeout(() => {
+			this._terminate(new Error('Idle timeout'));
+		}, this._idle_timeout) : true;		
+	}
+	disconnect() {
+		if (!this._idle_timer) return;
+		this._terminate(new Error('Forced disconnect'));
+	}
+	_terminate(err) {
+		this.emit('disconnect', err);
+		clearTimeout(this._idle_timer);
+		this._idle_timer = undefined;
+		this._chain_id = undefined;
+	}
+	_fetch(obj, ...a) {
+		return this._fetch_api(this.url, {
+			method: 'POST',
+			body: JSON.stringify({...obj, jsonrpc: '2.0', id: ++this._id}),
+			cache: 'no-store',
+			...a
+		});
+	}
+	async _request(obj) {
+		let res;
+		if (this._request_timeout > 0) {
+			let aborter = new AbortController();
+			let timer = setTimeout(() => aborter.abort(), this._request_timeout);
+			try {
+				res = await this._fetch(obj, {signal: aborter.signal});
+			} finally {
+				clearTimeout(timer);
+			}
+		} else {
+			res = await this._fetch(obj);
 		}
-	});
+		if (res.status !== 200) {
+			throw new Error(`Fetch failed: ${res.status}`);
+		}
+		let json;
+		try {
+			json = await res.json();
+		} catch (cause) {
+			throw new Error('Invalid provider response: expected json', {cause});
+		}
+		let {error} = json;
+		if (!error) return json.result;
+		let err = new Error(error.message ?? 'unknown error');
+		err.code = error.code;
+		throw err;
+	}
+}
+
+// convenience for making an eth_call
+// return an ABIDecoder
+// https://eth.wiki/json-rpc/API#eth_call
+// https://www.jsonrpc.org/specification
+// https://docs.soliditylang.org/en/latest/abi-spec.html
+async function eth_call(provider, tx, enc = null, tag = 'latest') {
+	if (typeof provider !== 'object') throw new TypeError('expected provider');
+	if (typeof tx === 'string') tx = {to: tx};
+	if (enc instanceof ABIEncoder) tx.data = enc.build_hex();
+	try {
+		let hex = await provider.request({method: 'eth_call', params:[tx, tag]});
+		return ABIDecoder.from_hex(hex);
+	} catch (err) {
+		if (err.code == -32000 && err.message === 'execution reverted') {
+			err.reverted = true;
+		}
+		throw err;
+	}
+}
+
+async function supports_interface(provider, contract, sig) {
+	const SIG = '01ffc9a7'; // supportsInterface(bytes4)
+	return (await eth_call(provider, contract, ABIEncoder.method(SIG).bytes(bytes4_from_method(sig)))).boolean();
 }
 
 var ADDR_TYPES = {
@@ -1878,15 +2215,6 @@ var ADDR_TYPES = {
   "FVDC": 608589380
 };
 
-let dot_eth;
-
-// set the normalizer transformation
-// default is passthru
-let normalizer;
-function set_normalizer(fn) {
-	normalizer = fn;
-}
-
 // accepts anything that keccak can digest
 // returns Uint256
 function labelhash(label) {
@@ -1897,7 +2225,7 @@ function labelhash(label) {
 // warning: this does not normalize
 // https://eips.ethereum.org/EIPS/eip-137#name-syntax
 // returns Uint256
-function node_from_ens_name(name) {
+function namehash(name) {
 	if (typeof name !== 'string') throw new TypeError('expected string');
 	let buf = new Uint8Array(64); 
 	if (name.length > 0) {
@@ -1910,112 +2238,366 @@ function node_from_ens_name(name) {
 }
 
 // https://docs.ens.domains/ens-deployments
-const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e'; // ens registry contract on mainnet
-const RESOLVED = Symbol('ENSResolved');
+const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e';
 
-// turn a name/address/object into {node, resolver, ...}
-// ens_resolve(node)
-// ens_resolve({node})
-// ens_resolve({name})
-// ens_resolve(name)
-// ens_resolve(address)
-async function ens_resolve(provider, input) {
-	if (input instanceof Uint256) { // node
-		return {
-			resolver: await call_registry_resolver(provider, input),
-			[RESOLVED]: new Date(),
-			node: input
-		};
-	}
-	if (typeof input === 'object') { // previously resolved object? 
-		if (RESOLVED in input) { // trusted
-			return input; 
-		} else if (input.node instanceof Uint256) { // use the provided node
-			return ens_resolve(provider, input.node);
-		} else if (typeof input.name === 'string') { // use the provided name as-is
-			let {name} = input;
-			let ret = await ens_resolve(provider, node_from_ens_name(name));
-			ret.name = name; // keep the name
-			return ret;
+class ENS {
+	constructor({provider, providers, ens_normalize, registry = ENS_REGISTRY}) {
+		if (!provider) throw new Error(`expected provider`);
+		this.provider = provider;
+		if (provider.isProviderView) {
+			this.providers = provider;
 		} else {
-			input = input.address; // fall through
-		}
-	}
-	if (typeof input === 'string') { // unnormalized-name or address
-		input = input.trim();
-		if (input.length > 0) {
-			if (is_valid_address(input)) {
-				input = await ens_name_for_address(provider, input);
-				if (!input) throw new Error(`No primary for address`);
-				// we cant remember this address because
-				// the primary can be set to any name
+			if (!providers) {
+				let p = new Providers();
+				p.add_dynamic(provider);
+				this.providers = p;
+			} else if (providers instanceof Providers) {
+				this.providers = providers;
+			} else {
+				throw new Error(`invalid providers`);
 			}
-			if (normalizer) input = normalizer(input);
-			return ens_resolve(provider, {name: input});
+		}
+		this.ens_normalize = ens_normalize;
+		this.registry = registry;
+		this.normalizer = undefined;
+		this.eth = undefined;
+	}
+	normalize(name) {
+		return this.ens_normalize?.(name) ?? name;
+	}
+	async get_provider() {
+		let p = this.provider;
+		return p.isProviderView ? p.get_provider() : p;
+	}
+	async get_resolver(node) {
+		const SIG = '0178b8bf'; // resolver(bytes32)
+		return (await eth_call(
+			await this.get_provider(), 
+			this.registry, 
+			ABIEncoder.method(SIG).number(node)
+		)).addr();
+	}
+	async resolve(input, {is_address, throws = false} = {}) {
+		if (is_address === undefined) is_address = is_valid_address(input);
+		let name = new ENSName(this, input, is_address);
+		try {
+			await name.resolve_input();
+		} catch (err) {
+			if (throws) throw err;
+		}
+		return name;
+	}
+	// warning: does not normalize!
+	async is_dot_eth_available(label) {
+		if (!this.eth) this.eth = await this.resolve('eth', {throws: true});
+		const SIG = '96e494e8'; // available(uint256)
+		return (await eth_call(
+			await this.get_provider(), 
+			await this.eth.get_address(), 
+			ABIEncoder.method(SIG).number(labelhash(label))
+		)).boolean();
+	}
+}
+
+class ENSName {
+	constructor(ens, input, is_address) {
+		this.ens = ens;
+		this.input = input;
+		this._is_address = is_address;
+	}
+	toJSON() {
+		return this.name;
+	}
+	assert_input_error() {
+		if (this._error) {
+			// throw again on reuse
+			throw new Error(this._error);
 		}
 	}
-	throw new TypeError('Expected name or address');
-}
-
-// this lookups up an address for name
-// it also stores the result into the record
-// returns checksummed-address as string
-async function lookup_address(provider, input) {
-	let ret = await ens_resolve(provider, input);
-	let {resolver, node, address} = ret;
-	if (is_null_hex(resolver)) return; // no resolver
-	if (address) return address; // already looked up
-	const SIG = '3b3b57de'; // addr(bytes32)
-	// this effectively is the same thing as:
-	// call_resolver_addr_for_type(node, 60
-	return ret.address = (await eth_call(provider, resolver, ABIEncoder.method(SIG).number(node))).addr();
-}
-
-async function lookup_owner(provider, input) {
-	let ret = await ens_resolve(provider, input);
-	let {node, owner} = ret;
-	if (owner) return owner; // already looked up
-	const SIG = '02571be3'; // owner(bytes32)
-	return ret.owner = (await eth_call(provider, ENS_REGISTRY, ABIEncoder.method(SIG).number(node))).addr();
-}
-
-// warning: this does not normalize
-// returns boolean
-async function is_dot_eth_available(provider, label) {
-	if (!dot_eth || (Date.now() - dot_eth[RESOLVED] > 3600000)) { // 1 hour
-		dot_eth = await ens_resolve(provider, {name: 'eth'});
-		await lookup_address(provider, dot_eth);
-		console.log(dot_eth);
+	assert_valid_resolver() {
+		this.assert_input_error();
+		if (!this.resolver) {
+			throw new Error(`Null resolver`);
+		}
 	}
-	const SIG = '96e494e8'; // available(uint256)
-	return (await eth_call(provider, dot_eth.address, ABIEncoder.method(SIG).number(labelhash(label)))).boolean();
-}
+	async resolve_input() {
+		this._error = undefined;
+		this.name = undefined;
+		this.node = undefined;
+		this.primary = undefined;
+		this.owner = undefined;
+		this.address = undefined;
+		this._display = undefined;
+		this.avatar = undefined;
+		this.pubkey = undefined;
+		this.content = undefined;
+		this.resolver = undefined;
+		this.resolved = undefined;
+		this.text = {};
+		this.addr = {};
+		if (this._is_address) {
+			try {
+				this.address = checksum_address(this.input);
+			} catch (err) {
+				throw new Error(this._error = `Invalid address: ${err.message}`);
+			}
+			let primary;
+			try {
+				primary = await this.get_primary();
+			} catch (err) {
+				this._error = err.message;
+				throw err;
+			}
+			if (!primary) {
+				throw new Error(this._error = `No name for ${this.input}`);
+			}
+			try {
+				this.name = this.ens.normalize(primary);
+			} catch (cause) {
+				throw new Error(this._error = `Primary name is invalid: ${primary}`, {cause});
+			} 
+			// note: we cant save this primary since the names primary might be different
+		} else {
+			try {
+				this.name = this.ens.normalize(this.input);
+			} catch (cause) {
+				throw new Error(this._error = `Input name is invalid: ${this.input}`, {cause});
+			}
+		}
+		this.node = namehash(this.name);
+		try {
+			let resolver = await this.ens.get_resolver(this.node);
+			if (!is_null_hex(resolver)) {
+				this.resolver = resolver;
+			}
+		} catch (cause) {
+			throw new Error(this._error = `Unable to determine resolver`, {cause});
+		}
+		this.resolved = new Date();
+		return this;
+	}
+	async get_address() {
+		if (this.address) return this.address;
+		this.assert_valid_resolver();
+		try {
+			const SIG = '3b3b57de'; // addr(bytes32)
+			return this.address = (await eth_call(
+				await this.ens.get_provider(), 
+				this.resolver, 
+				ABIEncoder.method(SIG).number(this.node)
+			)).addr();
+		} catch (cause) {
+			throw new Error(`Read address failed: ${cause.message}`, {cause});
+		}
+	}
+	async get_owner() {
+		if (this.owner) return this.owner;
+		this.assert_input_error();
+		try {
+			const SIG = '02571be3'; // owner(bytes32)
+			return this.owner = (await eth_call(
+				await this.ens.get_provider(), 
+				this.ens.registry, 
+				ABIEncoder.method(SIG).number(this.node)
+			)).addr();
+		} catch (cause) {
+			throw new Error(`Read owner failed: ${cause.message}`, {cause});
+		}
+	}
+	async get_primary() {
+		if (this.primary !== undefined) return this.primary;		
+		this.assert_input_error();
+		let address = await this.get_address(true);
+		// https://eips.ethereum.org/EIPS/eip-181
+		let rev_node = namehash(`${address.slice(2).toLowerCase()}.addr.reverse`); 
+		let rev_resolver = await this.ens.get_resolver(rev_node);
+		if (is_null_hex(rev_resolver)) {			
+			this.primary = null; 
+		} else {
+			try {
+				const SIG = '691f3431'; // name(bytes)
+				this.primary = (await eth_call(
+					await this.ens.get_provider(), 
+					rev_resolver, 
+					ABIEncoder.method(SIG).number(rev_node)
+				)).string();
+				// this could be empty string
+			} catch (cause) {
+				throw new Error(`Lookup primary failed: ${cause.message}`, {cause});
+			}
+		}
+		return this.primary;
+	}
+	// returns input error
+	get input_error() {
+		return this._error;
+	}
+	is_input_address() {
+		return this._is_address;
+	}
+	is_input_norm() {
+		return !this._is_address && this.input === this.name;
+	}
+	validate_name(name) {
+		this.assert_input_error();
+		let norm;
+		try {
+			norm = this.ens.normalize(name);
+		} catch (cause) {
+			throw new Error(`${name} name is invalid: ${cause.message}`, {cause});
+		}
+		if (norm !== this.name) {
+			throw new Error(`${name || '(empty-string)'} does not match ${this.name}`);
+		}
+		return name;
+	}
+	async is_input_display() {
+		if (this._is_address) return false;
+		let display;
+		if (this.resolver) {
+			display = await this.get_text('display');
+		}
+		try {
+			if (!display) {
+				// if display name is not set
+				// display is the norm name
+				return this.input === this.name; 
+			}
+			if (this.input === display) {
+				// if display matches the input
+				this.validate_name(display); 
+				return true;
+			}
+		} catch (err) {
+		}
+		return false;
+	}
+	async get_display_name() {
+		if (this._display) return this._display;
+		let display = await this.get_text('display');
+		let name = this.name; 
+		try {
+			name = this.validate_name(display);
+		} catch (err) {
+		}
+		return this._display = name;
+	}
+	async get_avatar() {
+		if (this.avatar) return this.avatar;
+		return this.avatar = await parse_avatar(
+			await this.get_text('avatar'), // throws
+			this.ens.providers,
+			await this.get_address()
+		);
+	}
+	// https://eips.ethereum.org/EIPS/eip-634
+	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/TextResolver.sol
+	//async get_text
+	async get_text(key) { return this.get_texts([key]).then(x => x[key]); }
+	async get_texts(keys, output) {
+		if (!Array.isArray(keys)) throw new TypeError('expected array');
+		this.assert_valid_resolver();
+		let provider = await this.ens.get_provider();
+		await Promise.all(keys.flatMap(key => (key in this.text) ? [] : (async () => {
+			const SIG = '59d1d43c'; // text(bytes32,string)
+			try {
+				this.text[key] = (await eth_call(
+					provider, 
+					this.resolver, 
+					ABIEncoder.method(SIG).number(this.node).string(key)
+				)).string();
+			} catch (cause) {
+				delete this.text[key];
+				throw new Error(`Error reading text ${key}: ${cause.message}`, {cause});
+			}
+		})()));
+		if (!output) return this.text;
+		for (let k of keys) output[k] = this.text[k];
+		return output;
+	}
+	// https://eips.ethereum.org/EIPS/eip-2304
+	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/AddrResolver.sol
+	async get_addr(addr) { return this.get_addrs([addr]).then(x => x[addr]); }
+	async get_addrs(addrs, output) {
+		if (!Array.isArray(addrs)) throw new TypeError('expected array');
+		this.assert_valid_resolver();
+		addrs = addrs.map(get_addr_type_from_input); // throws
+		let provider = await this.ens.get_provider();
+		await Promise.all(addrs.flatMap(([name, type]) => (name in this.addr) ? [] : (async () => {
+			try {
+				const SIG = 'f1cb7e06'; // addr(bytes32,uint256);
+				let addr = (await eth_call(
+					provider, 
+					this.resolver, 
+					ABIEncoder.method(SIG).number(this.node).number(type)
+				)).memory();
+				this.addr[name] = this.addr[type] = addr;
+			} catch (cause) {
+				delete this.addr[name];
+				delete this.addr[type];
+				throw new Error(`Error reading addr ${name}: ${cause.message}`, {cause});
+			}
+		})()));
+		if (!output) return this.addr;
+		for (let [name, type] of keys) {
+			output[name] = output[type] = this.addr[type];
+		}
+		return output;
+	}
+	// https://github.com/ethereum/EIPs/pull/619
+	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/PubkeyResolver.sol
+	async get_pubkey() {
+		this.assert_valid_resolver();
+		if (this.pubkey) return this.pubkey;
+		if (is_null_hex(this.resolver)) return this.pubkey = {};		
+		try {
+			const SIG = 'c8690233'; // pubkey(bytes32)
+			let dec = await eth_call(
+				await this.ens.get_provider(),
+				this.resolver, 
+				ABIEncoder.method(SIG).number(this.node)
+			);
+			return this.pubkey = {x: dec.uint256(), y: dec.uint256()};
+		} catch (cause) {
+			throw new Error(`Error reading pubkey: ${cause.message}`, {cause});
+		}
+	}
+	// https://eips.ethereum.org/EIPS/eip-1577
+	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/ContentHashResolver.sol
+	async get_content() {
+		this.assert_valid_resolver();
+		if (this.content) return this.content;
+		if (is_null_hex(this.resolver)) return this.content = {};
+		try {
+			const SIG = 'bc1c58d1'; // contenthash(bytes32)
+			let hash = (await eth_call(
+				await this.ens.get_provider(),
+				this.resolver, 
+				ABIEncoder.method(SIG).number(this.node)
+			)).memory();
+			this.content = {hash};
+			if (hash.length > 0) {
+				// https://github.com/multiformats/multicodec
+				let dec = new ABIDecoder(hash);
+				if (dec.uvarint() == 0xE3) { // ipfs
+					if (dec.read_byte() == 0x01 && dec.read_byte() == 0x70) { // check version and content-type
+						this.content.url = `ipfs://${base58_from_bytes(dec.read_bytes(dec.remaining))}`;
+					}
+				}
+			}
+			return this.content;
+		} catch (cause) {
+			throw new Error(`Error reading content: ${cause.message}`, {cause});
+		}
+	}
 
-// https://eips.ethereum.org/EIPS/eip-181
-// warning: this doesn't have to be normalized
-// returns string
-async function ens_name_for_address(provider, address) {
-	let rev_node = node_from_ens_name(`${address.slice(2).toLowerCase()}.addr.reverse`); 
-	let rev_resolver = await call_registry_resolver(provider, rev_node);
-	if (is_null_hex(rev_resolver)) return;
-	const SIG = '691f3431'; // name(bytes)
-	return (await eth_call(provider, rev_resolver, ABIEncoder.method(SIG).number(rev_node))).string();
 }
 
 // https://medium.com/the-ethereum-name-service/step-by-step-guide-to-setting-an-nft-as-your-ens-profile-avatar-3562d39567fc
 // https://medium.com/the-ethereum-name-service/major-refresh-of-nft-images-metadata-for-ens-names-963090b21b23
 // https://github.com/ensdomains/ens-metadata-service
-async function ens_avatar(provider, input) {
-	let ret = await ens_resolve(provider, input);
-	let {node, resolver} = ret;
-	if (is_null_hex(resolver)) return {type: 'none', ...ret};
-	await lookup_address(provider, ret);
-	ret.avatar = await call_resolver_text(provider, resolver, node, 'avatar');
-	return {...ret, ...await parse_avatar(ret.avatar, provider, ret.address)};
-}
-
 // note: the argument order here is non-traditional
-async function parse_avatar(avatar, provider = null, address = false) {
+async function parse_avatar(avatar, provider, address) {
 	if (typeof avatar !== 'string') throw new Error('Invalid avatar: expected string');
 	if (avatar.length == 0) return {type: 'null'}; 
 	if (avatar.includes('://') || avatar.startsWith('data:')) return {type: 'url'};
@@ -2024,24 +2606,28 @@ async function parse_avatar(avatar, provider = null, address = false) {
 	if (part0.startsWith('eip155:')) { // nft format  
 		if (parts.length < 2) return {type: 'invalid', error: 'expected contract'};
 		if (parts.length < 3) return {type: 'invalid', error: 'expected token'};
-		let chain = parseInt(part0.slice(part0.indexOf(':') + 1));
-		if (!(chain > 0)) return {type: 'invalid', error: 'expected chain id'};
+		let chain_id = parseInt(part0.slice(part0.indexOf(':') + 1));
+		if (!(chain_id > 0)) return {type: 'invalid', error: 'expected chain id'};
 		let part1 = parts[1];
 		if (part1.startsWith('erc721:')) {
 			// https://eips.ethereum.org/EIPS/eip-721
 			let contract = part1.slice(part1.indexOf(':') + 1);
-			if (!is_valid_address(contract)) return  {type: 'invalid', error: 'expected contract address'};
+			if (!is_valid_address(contract)) return {type: 'invalid', error: 'expected contract address'};
+			contract = checksum_address(contract);
 			let token;
 			try {
 				token = Uint256.from_str(parts[2]);
 			} catch (err) {
 				return {type: 'invalid', error: 'expected uint256 token'};
 			}
-			let ret = {type: 'nft', interface: 'erc721', contract, token, chain};
-			if (provider && parseInt(provider.chainId) === chain) {
-				const SIG_tokenURI = 'c87b56dd'; // tokenURI(uint256)
-				const SIG_ownerOf  = '6352211e'; // ownerOf(uint256)
+			let ret = {type: 'nft', interface: 'erc721', contract, token, chain_id};
+			if (provider instanceof Providers) {
+				provider = await provider?.find_provider(chain_id);
+			}
+			if (provider) {
 				try {
+					const SIG_tokenURI = 'c87b56dd'; // tokenURI(uint256)
+					const SIG_ownerOf  = '6352211e'; // ownerOf(uint256)
 					let [owner, meta_uri] = await Promise.all([
 						eth_call(provider, contract, ABIEncoder.method(SIG_ownerOf).number(token)).then(x => x.addr()),
 						eth_call(provider, contract, ABIEncoder.method(SIG_tokenURI).number(token)).then(x => x.string())
@@ -2049,7 +2635,7 @@ async function parse_avatar(avatar, provider = null, address = false) {
 					ret.owner = owner;
 					ret.meta_uri = meta_uri;
 					if (address) {
-						ret.owned = address === owner ? 1 : 0;
+						ret.owned = address.toUpperCase() === owner.toUpperCase() ? 1 : 0; // is_same_address?
 					}
 				} catch (err) {
 					return {type: 'invalid', error: `invalid response from contract`};
@@ -2060,23 +2646,27 @@ async function parse_avatar(avatar, provider = null, address = false) {
 			// https://eips.ethereum.org/EIPS/eip-1155
 			let contract = part1.slice(part1.indexOf(':') + 1);
 			if (!is_valid_address(contract)) return  {type: 'invalid', error: 'invalid contract address'};
+			contract = checksum_address(contract);
 			let token;
 			try {
 				token = Uint256.from_str(parts[2]);
 			} catch (err) {
 				return {type: 'invalid', error: 'expected uint256 token'};
 			}
-			let ret = {type: 'nft', interface: 'erc1155', contract, token, chain};
-			if (provider && parseInt(provider.chainId) === chain) {
-				const SIG_uri       = '0e89341c'; // uri(uint256)
-				const SIG_balanceOf = '00fdd58e'; // balanceOf(address,uint256)
+			let ret = {type: 'nft', interface: 'erc1155', contract, token, chain_id};
+			if (provider instanceof Providers) {
+				provider = await provider?.find_provider(chain_id);
+			}
+			if (provider) {
 				try {
+					const SIG_uri       = '0e89341c'; // uri(uint256)
+					const SIG_balanceOf = '00fdd58e'; // balanceOf(address,uint256)
 					let [balance, meta_uri] = await Promise.all([
 						!address ? -1 : eth_call(provider, contract, ABIEncoder.method(SIG_balanceOf).addr(address).number(token)).then(x => x.number()),
 						eth_call(provider, contract, ABIEncoder.method(SIG_uri).number(token)).then(x => x.string())
 					]);
 					// The string format of the substituted hexadecimal ID MUST be lowercase alphanumeric: [0-9a-f] with no 0x prefix.
-					ret.meta_uri = meta_uri.replace('{id}', hex_from_bytes(token.bytes)); 
+					ret.meta_uri = meta_uri.replace('{id}', token.hex.slice(2)); 
 					if (address) {
 						ret.owned = balance;
 					}
@@ -2092,75 +2682,13 @@ async function parse_avatar(avatar, provider = null, address = false) {
 	return {type: 'unknown'};
 }
 
-// https://eips.ethereum.org/EIPS/eip-634
-// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/TextResolver.sol
-async function ens_text_record(provider, input, keys) {
-	if (typeof keys === 'string') keys = [keys];
-	if (!Array.isArray(keys)) throw new TypeError('Expected key or array of keys');
-	let ret = await ens_resolve(provider, input);
-	let {node, resolver} = ret;
-	if (!is_null_hex(resolver)) {
-		let values = await Promise.all(keys.map(x => call_resolver_text(provider, resolver, node, x)));
-		ret.text = Object.fromEntries(keys.map((k, i) => [k, values[i]]));
-	}
-	return ret;
-}
-
-// https://eips.ethereum.org/EIPS/eip-2304
-// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/AddrResolver.sol
-async function ens_addr_record(provider, input, addresses) {
-	if (!Array.isArray(addresses)) addresses = [addresses];
-	addresses = addresses.map(get_addr_type_from_input); // throws
-	let ret = await ens_resolve(provider, input);
-	let {node, resolver} = ret;
-	if (!is_null_hex(resolver)) {
-		let values = await Promise.all(addresses.map(([_, type]) => call_resolver_addr_for_type(provider, resolver, node, type)));
-		ret.addr = Object.fromEntries(addresses.map(([name, _], i) => [name, values[i]]));
-	}
-	return ret;
-}
-
-// https://eips.ethereum.org/EIPS/eip-1577
-// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/ContentHashResolver.sol
-async function ens_contenthash_record(provider, input) {
-	let ret = await ens_resolve(provider, input);
-	let {node, resolver} = ret;
-	if (!is_null_hex(resolver)) {
-		const SIG = 'bc1c58d1'; // contenthash(bytes32)
-		let v = (await eth_call(provider, resolver, ABIEncoder.method(SIG).number(node))).memory();
-		if (v.length > 0) {
-			ret.contenthash = v;
-			// https://github.com/multiformats/multicodec
-			let dec = new ABIDecoder(v);
-			if (dec.uvarint() == 0xE3) { // ipfs
-				if (dec.read_byte() == 0x01 && dec.read_byte() == 0x70) { // check version and content-type
-					ret.contenthash_url = `ipfs://${base58_from_bytes(dec.read(dec.remaining))}`;
-				}
-			}
-		}
-	}
-	return ret;
-}
-
-// https://github.com/ethereum/EIPs/pull/619
-// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/PubkeyResolver.sol
-async function ens_pubkey_record(provider, input) {
-	let ret = await ens_resolve(provider, input);
-	let {node, resolver} = ret;
-	if (!is_null_hex(resolver)) {
-		const SIG = 'c8690233'; // pubkey(bytes32)
-		let dec = await eth_call(provider, resolver, ABIEncoder.method(SIG).number(node));
-		ret.pubkey = {x: dec.uint256(), y: dec.uint256()};
-	}
-	return ret;
-}
-
 function format_addr_type(i) {
 	return '0x' + i.toString(16).padStart(4, '0');
 }
 
 // see: test/build-address-types.js
 // https://github.com/satoshilabs/slips/blob/master/slip-0044.md
+// returns [name:string, coinType: integer]
 function get_addr_type_from_input(x) {
 	if (typeof x === 'string') {
 		let type = ADDR_TYPES[x];
@@ -2180,32 +2708,89 @@ function get_addr_type_from_input(x) {
 	}
 }
 
-async function call_registry_resolver(provider, node) {
-	const SIG = '0178b8bf'; // resolver(bytes32)
-	try {
-		return (await eth_call(provider, ENS_REGISTRY, ABIEncoder.method(SIG).number(node))).addr();
-	} catch (cause) {
-		throw new Error('Invalid response from registry', {cause});
+class NFT {
+	constructor(provider, address, {strict = true, cache = true} = {}) {
+		this.provider = provider;
+		this.address = checksum_address(address); // throws
+		this.type = undefined;
+		this.type_error = undefined;
+		this.strict = strict; // assumes 721 if not 1155
+		this.queue = [];
+		if (cache) {
+			this.token_uris = {};
+		}
+	}
+	async get_provider() {
+		let p = this.provider;
+		return p.isProviderView ? p.get_provider() : p;
+	}
+	async get_type() {
+		let {queue} = this;
+		if (!queue) {
+			if (this.type_error) throw new Error(`Type resolution failed`, {cause: this.type_error});
+			return this.type;
+		}
+		if (queue.length == 0) {
+			try {
+				let type;
+				if (await supports_interface(await this.get_provider(), this.address, 'd9b67a26')) {
+					type = 'ERC-1155';
+				} else if (!this.strict || await supports_interface(await this.get_provider(), this.address, '80ac58cd')) {
+					type = 'ERC-721';
+				} else {
+					type = 'Unknown';
+				}
+				this.type = type;
+				this.queue = undefined;
+				queue.forEach(x => x.ful());
+				return type;
+			} catch (err) {
+				this.type_error = err;
+				this.queue = undefined;
+				queue.forEach(x => x.rej(err));
+				throw err;
+			}
+		} else {
+			return new Promise((ful, rej) => {
+				queue.push({ful, rej});
+			});
+		}
+	} 
+	async get_token_uri(x) {
+		let token = Uint256.wrap(x); // throws
+		let {hex} = token;
+		let {token_uris} = this;
+		let uri = token_uris?.[hex]; // lookup cache
+		if (!uri) {
+			switch (await this.get_type()) {
+				case 'ERC-721': {
+					// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-721.md
+					const SIG = 'c87b56dd'; // tokenURI(uint256)
+					uri = (await eth_call(
+						await this.get_provider(),
+						this.address, 
+						ABIEncoder.method(SIG).add_hex(hex)
+					)).string();
+					break;
+				}
+				case 'ERC-1155': {
+					// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1155.md
+					const SIG = '0e89341c';	// uri(uint256)
+					uri = (await eth_call(
+						await this.get_provider(), 
+						this.address, 
+						ABIEncoder.method(SIG).add_hex(hex)
+					)).string();
+					uri = uri.replace('{id}', hex.slice(2)); // 1155 standard (lowercase, no 0x)
+					break;
+				}
+				default: throw new Error(`unable to query ${x} from ${this.address}`);
+			}
+			uri = fix_multihash_uri(uri);
+			if (token_uris) token_uris[hex] = uri; // cache
+		}
+		return uri;
 	}
 }
 
-
-async function call_resolver_text(provider, resolver, node, key) {
-	const SIG = '59d1d43c'; // text(bytes32,string)
-	try {
-		return (await eth_call(provider, resolver, ABIEncoder.method(SIG).number(node).string(key))).string();
-	} catch (cause) {
-		throw new Error(`Invalid response from resolver for text: ${key}`, {cause});
-	}
-}
-
-async function call_resolver_addr_for_type(provider, resolver, node, type) {
-	const SIG = 'f1cb7e06'; // addr(bytes32,uint256);
-	try {
-		return (await eth_call(provider, resolver, ABIEncoder.method(SIG).number(node).number(type))).memory();
-	} catch (cause) {
-		throw new Error(`Invalid response from resolver for addr of type: ${format_addr_type(type)}`, {cause});
-	}
-}
-
-export { ABIDecoder, ABIEncoder, ADDR_TYPES, FetchProvider, Uint256, WebSocketProvider, base58_from_bytes, bytes_from_base58$1 as bytes_from_base58, bytes_from_digits_or_null, bytes_from_hex, bytes_from_utf8, checksum_address, compare_arrays, ens_addr_record, ens_avatar, ens_contenthash_record, ens_name_for_address, ens_pubkey_record, ens_resolve, ens_text_record, eth_call, hex_from_bytes, is_checksum_address, is_dot_eth_available, is_multihash, is_null_hex, is_valid_address, keccak, labelhash, left_truncate_bytes, lookup_address, lookup_owner, node_from_ens_name, parse_avatar, parse_bytes_from_digits, retry, set_bytes_to_unsigned, set_normalizer, sha3, shake, unsigned_from_bytes, utf8_from_bytes };
+export { ABIDecoder, ABIEncoder, ADDR_TYPES, ENS, ENSName, FetchProvider, NFT, Providers, Uint256, WebSocketProvider, base58_from_bytes, bytes4_from_method, bytes_from_base58$1 as bytes_from_base58, bytes_from_hex, bytes_from_utf8, chain_id_from_provider, checksum_address, compare_arrays, determine_window_provider, eth_call, fix_multihash_uri, hex_from_bytes, is_checksum_address, is_header_bug, is_multihash, is_null_hex, is_valid_address, keccak, labelhash, left_truncate_bytes, namehash, parse_avatar, retry, set_bytes_to_number, sha3, shake, source_from_provider, supports_interface, unsigned_from_bytes, utf8_from_bytes };

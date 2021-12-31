@@ -3,7 +3,7 @@ import {terser} from 'rollup-plugin-terser';
 
 export default [
 	{
-		input: 'eth-tools.js',
+		input: 'index.js',
 		output: {
 			file: 'dist/eth-tools.js'
 		},

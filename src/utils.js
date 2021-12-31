@@ -43,3 +43,20 @@ export function is_multihash(s) {
 		return false;
 	}
 }
+
+export function fix_multihash_uri(s) {
+	if (is_multihash(s)) { // just a hash
+		return `ipfs://${s}`;
+	}
+	let match;
+	if (match = s.match(/^ipfs\:\/\/ipfs\/(.*)$/i)) { // fix "ipfs://ipfs/.."
+		return `ipfs://${match[1]}`;
+	}
+	/*
+	let match;
+	if ((match = s.match(/\/ipfs\/([1-9a-zA-Z]{32,})(\/?.*)$/)) && is_multihash(match[1])) {
+		s = `ipfs://${match[1]}${match[2]}`;
+	}
+	*/
+	return s;
+}

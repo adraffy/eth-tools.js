@@ -1,6 +1,6 @@
 {
   "name": "@adraffy/eth-tools",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "description": "Compact set of ES6 tools for Ethereum dapps that work in the browser",
   "keywords": [
     "ethereum",
@@ -9,7 +9,7 @@
     "keccak"
   ],
   "type": "module",
-  "main": "eth-tools.js",
+  "main": "index.js",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/adraffy/eth-tools.js.git"
@@ -29,7 +29,7 @@
     "dist": "rollup -c"
   },
   "dependencies": {
-    "@adraffy/keccak": "^1.2.1"
+    "@adraffy/keccak": "^1.2.2"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "^13.0.6",
