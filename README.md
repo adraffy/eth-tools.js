@@ -16,26 +16,51 @@ import * as tools from '@adraffy/eth-tools';
 
 ## Providers
 ```Javascript
-import {FetchProvider, WebSocketProvider, retry} from '...';
-
 let provider = new WebSocketProvider({url: 'ws://...', /*WebSocket*/}); 
 // pass it a WebSocket implementation for nodejs
 
 let provider = new FetchProvider({url: 'https://cloudflare-eth.com', /*fetch*/}); 
 // pass it a fetch implementation for nodejs
 
+// create a provider set
+let providers = new Providers();
+providers.add(1, provider) // mainnet
+providers.add(137, new FetchProvider({url: 'https://rpc-mainnet.matic.network'})); // matic
+
+// create a provider set with a prefered chain
+let view = providers.view(1); // chain id
+// get the default provider
+await view.get_provider();
+// find a provider for a chain
+await view.find_provider(2);
+
+import {determine_window_provider} from '...';
+
+determine_window_provider.then(p => {
+	// metamask or something
+	providers.add_dynamic(p); // support dynamic chain switching
+}).catch(() => {}); // ignore error
+
 // fix "header not found" bug
-// works with any provider
 let provider = retry(window.ethereum); 
 ```
 
 ## ENS
 ```Javascript
-import {ENS} from '...';
-let provider = ...; // see above
 import {ens_normalize} from '@adraffy/ens-normalize.js'; // recommended
-let ens = new ENS({provider, ens_normalize});
 
+// use ens_normalize() as the normalizer, string -> string
+// use a single provider for whatever chain 
+let ens = new ENS({provider, ens_normalize}); 
+
+// use a provider set, but operate on mainnet
+// this is useful for resolving cross-chain avatars
+let ens = new ENS({provider: providers.view(1), ens_normalize});
+
+// resolve a name or an address
+// throw before returning ENSName object
+await ens.resolve('bRAntly.eth', {throws: true});
+// returns ENSName object with .input_error property
 let name = await ens.resolve('bRAntly.eth');
 
 console.log(await name.get_address());
