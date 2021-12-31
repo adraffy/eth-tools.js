@@ -8,23 +8,29 @@
 <body>
 <pre>Loading...</pre>
 <script type="module">	
-import {
-	FetchProvider, retry, 
-	is_dot_eth_available
-} from '../dist/eth-tools.min.js';
-let provider = retry(new FetchProvider({url: 'https://cloudflare-eth.com/'}));
+import {FetchProvider, ENS} from '../dist/eth-tools.min.js';
+let ens = new ENS({
+	provider: new FetchProvider({url: 'https://cloudflare-eth.com/'}),
+});
 const pre = document.querySelector('pre');
 async function run() {
 	let label = window.location.hash.slice(1).trim();
 	if (label.length == 0) {
-		pre.innerHTML = 'Provide a label using location hash: <a href="bob">example</a>';
+		pre.innerHTML = 'Provide a label using location hash: <a href="#peepeepoopoo">example</a>';
 		return;
 	}
 	pre.innerHTML = `Checking ${label}...`;
-	pre.innerHTML = JSON.stringify({
-		label,
-		available: await is_dot_eth_available(provider, label) // this does not normalize
-	}, null, 2);
+	try {
+		if (label.includes('.')) {
+			throw new Error('label cannot contain stops (.)');
+		}
+		pre.innerHTML = JSON.stringify({
+			label,
+			available: await ens.is_dot_eth_available(label) // this does not normalize
+		}, null, 2);
+	} catch (err) {
+		pre.innerHTML = `Error: ${err.message}`;
+	}
 }
 await run();
 window.addEventListener('hashchange', run);

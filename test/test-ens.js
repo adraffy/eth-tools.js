@@ -18,7 +18,8 @@ console.log(await name.get_avatar());
 console.log(await name.get_owner());
 
 console.log(await name.get_texts(['name', 'email', 'com.twitter']));
-console.log(await name.get_addrs(['BTC', 2, 'ETH', 'XLM']));
+console.log(await name.get_addrs(['BTC', 'XLM']));
+console.log(await name.get_addrs(['BTC', 'XLM'], undefined, false));
 console.log(await name.get_content());
 console.log(await name.get_pubkey());
 

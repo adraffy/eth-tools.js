@@ -311,7 +311,7 @@ export class ENSName {
 	// https://eips.ethereum.org/EIPS/eip-2304
 	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/AddrResolver.sol
 	async get_addr(addr) { return this.get_addrs([addr]).then(x => x[addr]); }
-	async get_addrs(addrs, output) {
+	async get_addrs(addrs, output, named = true) {
 		if (!Array.isArray(addrs)) throw new TypeError('expected array');
 		this.assert_valid_resolver();
 		addrs = addrs.map(get_addr_type_from_input); // throws
@@ -324,18 +324,25 @@ export class ENSName {
 					this.resolver, 
 					ABIEncoder.method(SIG).number(this.node).number(type)
 				)).memory();
-				this.addr[name] = this.addr[type] = addr;
+				this.addr[type] = addr;
 			} catch (cause) {
-				delete this.addr[name];
 				delete this.addr[type];
 				throw new Error(`Error reading addr ${name}: ${cause.message}`, {cause});
 			}
 		})()));
-		if (!output) return this.addr;
-		for (let [name, type] of keys) {
-			output[name] = output[type] = this.addr[type];
+		if (output) {
+			for (let [name, type] of keys) {
+				output[named ? name : type] = this.addr[type];
+			}
+			return output; // return subset by name
+		} else if (named) {
+			return Object.fromEntries(Object.entries(this.addr).map(([k, v]) => {
+				let [name] = get_addr_type_from_input(parseInt(k));
+				return [name, v];
+			})); // return all by name
+		} else {
+			return this.addr; // return everything by id
 		}
-		return output;
 	}
 	// https://github.com/ethereum/EIPs/pull/619
 	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/PubkeyResolver.sol
@@ -360,7 +367,6 @@ export class ENSName {
 	async get_content() {
 		this.assert_valid_resolver();
 		if (this.content) return this.content;
-		if (is_null_hex(this.resolver)) return this.content = {};
 		try {
 			const SIG = 'bc1c58d1'; // contenthash(bytes32)
 			let hash = (await eth_call(
@@ -368,17 +374,18 @@ export class ENSName {
 				this.resolver, 
 				ABIEncoder.method(SIG).number(this.node)
 			)).memory();
-			this.content = {hash};
+			let content = {};			
 			if (hash.length > 0) {
+				content.hash = hash;
 				// https://github.com/multiformats/multicodec
 				let dec = new ABIDecoder(hash);
 				if (dec.uvarint() == 0xE3) { // ipfs
 					if (dec.read_byte() == 0x01 && dec.read_byte() == 0x70) { // check version and content-type
-						this.content.url = `ipfs://${base58_from_bytes(dec.read_bytes(dec.remaining))}`;
+						content.url = `ipfs://${base58_from_bytes(dec.read_bytes(dec.remaining))}`;
 					}
 				}
 			}
-			return this.content;
+			return this.content = content;
 		} catch (cause) {
 			throw new Error(`Error reading content: ${cause.message}`, {cause});
 		}
@@ -393,7 +400,7 @@ export class ENSName {
 export async function parse_avatar(avatar, provider, address) {
 	if (typeof avatar !== 'string') throw new Error('Invalid avatar: expected string');
 	if (avatar.length == 0) return {type: 'null'}; 
-	if (avatar.includes('://') || avatar.startsWith('data:')) return {type: 'url'};
+	if (avatar.includes('://') || avatar.startsWith('data:')) return {type: 'url', url: avatar};
 	let parts = avatar.split('/');
 	let part0 = parts[0];
 	if (part0.startsWith('eip155:')) { // nft format  

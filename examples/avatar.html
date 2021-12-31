@@ -216,17 +216,21 @@ Examples:
 <div id="output"></div>
 <script type="module">
 import {
-	FetchProvider, retry,
-	set_normalizer,
-	ens_avatar, parse_avatar,
-	ens_text_record, ens_addr_record, ens_contenthash_record, 
-	hex_from_bytes, is_null_hex
+	FetchProvider, Providers, determine_window_provider,
+	ENS, parse_avatar, hex_from_bytes
 } from '../dist/eth-tools.min.js';
-
 import {ens_normalize} from '../../ens-normalize.js/dist/ens-normalize.min.js';
-set_normalizer(ens_normalize);
 
-let provider = retry(new FetchProvider({url: 'https://cloudflare-eth.com/'})); 
+let providers = new Providers()
+	.add_static(1, new FetchProvider({url: 'https://cloudflare-eth.com'}))
+	.add_static(137, new FetchProvider({url: 'https://rpc-mainnet.matic.network'}));
+let window_provider;
+determine_window_provider().then(p => {
+	window_provider = p;
+	providers.add_dynamic(p);
+}).catch(() => {});
+
+let ens = new ENS({provider: providers.view(1), ens_normalize});
 
 const primary_arrows = document.querySelector('#input .arrows');
 const input_field = document.querySelector('#input_field');
@@ -301,13 +305,16 @@ function replace_ipfs(uri) {
 	return uri.replace(/^ipfs:\/\//, 'https://ipfs.io/ipfs/');
 }
 
+
 function fix_uri(uri, context) {
 	let url = replace_ipfs(uri);
+	/*
 	if (url.includes('/ipfs/ipfs/')) {
 		let fixed = url.replaceAll('/ipfs/ipfs/', '/ipfs/');
 		output.append(create_error(`<b>${context} URI</b>: <a href="${url}}">${uri}</a> is likely wrong, using <a href="${fixed}">this</a> instead.`));
 		url = fixed;
 	}
+	*/
 	return url;
 }
 
@@ -354,9 +361,9 @@ function window_ethereum_available() {
 }
 
 async function get_ethereum_account() {
-	if (!window_ethereum_available()) return;
-	let v = await ethereum.request({method: 'eth_accounts'});
-	return v[Math.max(0, v.indexOf(ethereum.selectedAddress))];	
+	if (!window_provider) return;
+	let v = await window_provider.request({method: 'eth_accounts'});
+	return v[Math.max(0, v.indexOf(window_provider.selectedAddress))];	
 }
 
 function set_working(b) {
@@ -388,19 +395,31 @@ async function resolve0(output, input) {
 	let text_keys = parse_keys(text_field.value);
 	let addr_keys = parse_keys(addr_field.value).map(s => /^(0x)?\d+$/.test(s) ? parseInt(s) : s);
 	
-	let resolved;
+	let name;
 	let account;
+	let resolved;
 	try {			
 		if (input.startsWith('eip155:')) { // allow avatar string input
 			account = await get_ethereum_account();
-			resolved = await parse_avatar(input, provider, account);
+			resolved = await parse_avatar(input, providers, account);
+			resolved.avatar = input;
+			if (account) {
+				resolved.account = account;
+			}
 		} else {			
-			resolved = await ens_avatar(provider, input);
+			name = await ens.resolve(input, {throws: true});
+			let parsed = await name.get_avatar();
+			resolved = {
+				name: name.name,
+				node: name.node.hex,
+				resolver: name.resolver.hex,
+				avatar: await name.get_text('avatar'),
+				...parsed
+			};
 		}
 	} catch (err) {
 		output.append(create_error(err.message));
 		console.error(err);
-		console.log(err.cause);
 		return;
 	} finally {
 		set_working(false);
@@ -412,12 +431,12 @@ async function resolve0(output, input) {
 	let pre = document.createElement('pre');
 	pre.innerHTML = JSON.stringify(resolved, null, 2);
 	switch (resolved.type) {
-		case 'none': {
+		/*case 'none': {
 			output.append(create_error('<b>Name not registered</b>', pre));
 			return; // nothing more to do
-		}
+		}*/
 		case 'unknown': {
-			output.append(create_error('Invalid avatar format'), pre);
+			output.append(create_error('Unknown avatar format'), pre);
 			break;
 		}
 		case 'null': {
@@ -432,19 +451,19 @@ async function resolve0(output, input) {
 			let {row, avatar} = create_avatar_row();
 			row.append(pre);
 			output.append(row);
-			load_image_into(avatar, resolved.avatar);
+			load_image_into(avatar, resolved.url);
 			break;
 		}
 		case 'nft': {
 			let {row, avatar} = create_avatar_row();
-			let {meta_uri, contract, token, owned, chain} = resolved;
+			let {meta_uri, contract, token, owned, chain_id} = resolved;
 			if (typeof owned === 'number') {
 				avatar.classList.add(owned > 0 ? 'owner' : 'stolen');
 			}
 			row.append(pre);
 			output.append(row);
 
-			switch (chain) {
+			switch (chain_id) {
 				case 1: { // mainnet 
 					let a = create_link(`https://opensea.io/assets/${contract}/${token.dec}`);
 					a.classList.add('wrapped');
@@ -469,8 +488,8 @@ async function resolve0(output, input) {
 
 			if (!meta_uri) {
 				avatar.innerHTML = '';
-				if (chain != 1) {
-					avatar.append(`Contracts on chain ${chain} are not supported by this dapp.`);
+				if (!(await providers.find_provider(chain_id))) {
+					avatar.append(`Contracts on chain ${chain_id} are not supported by this dapp.`);
 				} else {
 					avatar.append(`Contract returned empty metadata URI`);
 				}
@@ -527,7 +546,7 @@ async function resolve0(output, input) {
 		}
 	}
 	
-	if (!resolved.name) {
+	if (!name) {
 		if (account) {
 			let div = document.createElement('div');
 			div.id = 'ownership';
@@ -540,30 +559,30 @@ async function resolve0(output, input) {
 				div.innerHTML = '❌ Not owned by you';
 			}
 			output.append(div);		
-		} else if (window_ethereum_available()) {
+		} else if (window_provider) {
 			let btn = document.createElement('button');
 			btn.innerHTML = 'Check';
 			btn.addEventListener('click', () => {
-				ethereum.request({method: 'eth_requestAccounts'}).then(() => {
+				window_provider.request({method: 'eth_requestAccounts'}).then(() => {
 					resolve();
-				}).catch(() => {});			
-			});		
+				}).catch(() => {});
+			});
 			let div = document.createElement('div');
 			div.id = 'ownership';
 			div.classList.add('row', 'unknown');
 			div.innerHTML = '⚠️ Ownership Unknown';
 			div.append(btn);
-			output.append(div);			
+			output.append(div);
 		}	
 
 
 	} else {
 		// get text records
 		if (text_keys.length > 0) {
-			promises.push(ens_text_record(provider, resolved, text_keys).then(({text}) => {
+			promises.push(name.get_texts(text_keys).then(texts => {
 				let table = document.createElement('table');
 				table.id = 'text';
-				for (let [k, v] of Object.entries(text)) {
+				for (let [k, v] of Object.entries(texts)) {
 					let td_k = document.createElement('td');
 					td_k.classList.add('key');
 					td_k.innerHTML = k;
@@ -592,13 +611,13 @@ async function resolve0(output, input) {
 		// get address records
 		const ID_addr = 'addr';
 		if (addr_keys.length > 0) {
-			promises.push(ens_addr_record(provider, resolved, addr_keys).then(({addr}) => {
+			promises.push(name.get_addrs(addr_keys).then(addrs => {
 				let table = document.createElement('table');
 				table.id = ID_addr;
 				let tr_warning = document.createElement('tr');
 				tr_warning.innerHTML = '<td colspan="2" style="background: #ffc;text-align:center">⚠️ Addresses are shown as raw hex data and require encoding</td>';
 				table.append(tr_warning);
-				for (let [k, v] of Object.entries(addr)) {
+				for (let [k, v] of Object.entries(addrs)) {
 					let tr = document.createElement('tr');
 					tr.innerHTML = `<td class="key">${html_escape(k)}</td><td class="wrapped">${hex_from_bytes(v)}</td>`;
 					table.append(tr);
@@ -613,19 +632,19 @@ async function resolve0(output, input) {
 
 		// get content hash
 		const ID_contenthash = 'contenthash';
-		promises.push(ens_contenthash_record(provider, resolved).then(({contenthash, contenthash_url}) => {
-			if (!contenthash) return;
+		promises.push(name.get_content().then(({hash, url}) => {
+			if (!hash) return;
 			let div = document.createElement('div');
 			div.id = ID_contenthash;
 			div.classList.add('row', 'centered');
 			div.innerHTML = '<b>Contenthash:</b>';
-			if (contenthash_url) {
-				let a = create_link(replace_ipfs(contenthash_url), contenthash_url);
+			if (url) {
+				let a = create_link(replace_ipfs(url), url);
 				a.classList.add('wrapped');
 				div.append(a);
 			} else {
 				let pre = document.createElement('pre');
-				pre.innerHTML = [...contenthash].map(x = x.toString(16).padStart(2, '0')).join(' ');
+				pre.innerHTML = [...hash].map(x = x.toString(16).padStart(2, '0')).join(' ');
 				div.append(pre);
 			}
 			output.append(div);
