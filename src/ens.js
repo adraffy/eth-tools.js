@@ -331,7 +331,7 @@ export class ENSName {
 			}
 		})()));
 		if (output) {
-			for (let [name, type] of keys) {
+			for (let [name, type] of addrs) {
 				output[named ? name : type] = this.addr[type];
 			}
 			return output; // return subset by name

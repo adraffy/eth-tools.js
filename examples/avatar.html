@@ -579,7 +579,7 @@ async function resolve0(output, input) {
 	} else {
 		// get text records
 		if (text_keys.length > 0) {
-			promises.push(name.get_texts(text_keys).then(texts => {
+			promises.push(name.get_texts(text_keys, {}).then(texts => {
 				let table = document.createElement('table');
 				table.id = 'text';
 				for (let [k, v] of Object.entries(texts)) {
