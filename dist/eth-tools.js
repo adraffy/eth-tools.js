@@ -559,7 +559,7 @@ class Uint256 {
 	}
 	get unsigned() { return unsigned_from_bytes(this.bytes); }
 	get hex() { return '0x' + hex_from_bytes(this.bytes); }
-	get min_hex() { return '0x' + hex_from_bytes(this.bytes).replace(/^0+/, ''); } // remove leading zeros
+	get min_hex() { return '0x' + this.digit_str(16) } 
 	get bin() { return '0b' + this.digit_str(2); }
 	get dec() { return this.digit_str(10); }
 	digit_str(radix, lookup = '0123456789abcdefghjiklmnopqrstuvwxyz') {
