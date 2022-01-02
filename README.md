@@ -24,25 +24,22 @@ let provider = new FetchProvider({url: 'https://cloudflare-eth.com', /*fetch*/})
 
 // create a provider set
 let providers = new Providers();
-providers.add(1, provider) // mainnet
-providers.add(137, new FetchProvider({url: 'https://rpc-mainnet.matic.network'})); // matic
+// add providers with fixed chain id
+providers.add_static(1, provider) // mainnet
+providers.add_static(137, new FetchProvider({url: 'https://rpc-mainnet.matic.network'})); // matic
+// allow for shitty startup
+determine_window_provider.then(p => {
+	// add providers with dynamic chain id (eg. metamask)
+	// this also fixes "header not found" bug
+	providers.add_dynamic(p);
+}).catch(() => {}); // ignore error
 
-// create a provider set with a prefered chain
+// create a provider set with a preferred chain
 let view = providers.view(1); // chain id
 // get the default provider
 await view.get_provider();
 // find a provider for a chain
 await view.find_provider(2);
-
-import {determine_window_provider} from '...';
-
-determine_window_provider.then(p => {
-	// metamask or something
-	providers.add_dynamic(p); // support dynamic chain switching
-}).catch(() => {}); // ignore error
-
-// fix "header not found" bug
-let provider = retry(window.ethereum); 
 ```
 
 ## ENS

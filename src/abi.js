@@ -1,12 +1,19 @@
 import {keccak, bytes_from_hex, hex_from_bytes, bytes_from_utf8, utf8_from_bytes} from '@adraffy/keccak';
-import {standardize_address, compare_arrays} from './utils.js';
+import {compare_arrays} from './utils.js';
+import {standardize_address} from './address.js';
+
+function index_mask_from_bit(i) { 
+	let index = i < 0 ? ~i : 255 - i;
+	if (index < 0 || index >= 256) throw new TypeError(`invalid bit index: ${i}`);
+	return [index >> 3, 0x80 >> (index & 7)];
+}
 
 export class Uint256 {	
 	static wrap(x) { // tries to avoid a copy
 		if (x instanceof Uint256) {
 			return x;
 		} else if (x instanceof Uint8Array) {
-			return new this(left_truncate_bytes(v, 32, false));
+			return new this(left_truncate_bytes(x, 32, false));
 		} else if (Number.isSafeInteger(x)) {
 			return this.from_number(x);
 		} else if (typeof x === 'string') {
@@ -71,7 +78,7 @@ export class Uint256 {
 	}
 	set_number(i) {	 
 		set_bytes_to_number(this.bytes, i); // throws
-		return this;
+		return this; // chainable
 	}
 	add(x) {
 		let other = this.constructor.wrap(x).bytes; // throws
@@ -82,11 +89,41 @@ export class Uint256 {
 			bytes[i] = sum;
 			carry = sum >> 8;
 		}
-		return this;
+		return this; // chainable
 	}
+	apply_bytewise_binary_op(fn, x) {
+		let other = this.constructor.wrap(x).bytes; // throws
+		this.bytes.forEach((x, i, v) => v[i] = fn(x, other[i]));
+		return this; // chainable
+	}
+	bytewise_fill(x) {
+		this.bytes.fill(x);
+		return this; // chainable
+	}
+	or(x)  { return this.apply_bytewise_binary_op((a, b) => a | b, x); } // chainable
+	and(x) { return this.apply_bytewise_binary_op((a, b) => a & b, x); } // chainable
+	xor(x) { return this.apply_bytewise_binary_op((a, b) => a ^ b, x); } // chainable
 	not() {
 		this.bytes.forEach((x, i, v) => v[i] = ~x);
 		return this;
+	}
+	set_bit(i, truthy = true) {
+		let [index, mask] = index_mask_from_bit(i);
+		if (truthy) {
+			this.bytes[index] |= mask;
+		} else {
+			this.bytes[index] &= ~mask;
+		}
+		return this; // chainable
+	}
+	flip_bit(i) {
+		let [index, mask] = index_mask_from_bit(i);
+		this.bytes[index] ^= mask;
+		return this; // chainable
+	}
+	test_bit(i) {
+		let [index, mask] = index_mask_from_bit(i);
+		return (this.bytes[index] & mask) > 0;
 	}
 	get number() {
 		let {bytes} = this;
@@ -99,7 +136,8 @@ export class Uint256 {
 	get unsigned() { return unsigned_from_bytes(this.bytes); }
 	get hex() { return '0x' + hex_from_bytes(this.bytes); }
 	get min_hex() { return '0x' + hex_from_bytes(this.bytes).replace(/^0+/, ''); } // remove leading zeros
-	get dec() { return this.digit_str(10); }	
+	get bin() { return '0b' + this.digit_str(2); }
+	get dec() { return this.digit_str(10); }
 	digit_str(radix, lookup = '0123456789abcdefghjiklmnopqrstuvwxyz') {
 		if (radix > lookup.length) throw new RangeError(`radix larger than lookup: ${x}`);
 		return this.digits(radix).map(x => lookup[x]).join('');
@@ -124,7 +162,7 @@ export class Uint256 {
 		return this.min_hex;
 	}
 	toString() {
-		return `Uint256(${this.hex})`;
+		return `Uint256(${this.min_hex})`;
 	}
 }
 

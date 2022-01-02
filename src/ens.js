@@ -1,7 +1,8 @@
 import {hex_from_bytes, keccak} from '@adraffy/keccak';
 import {ABIDecoder, ABIEncoder, Uint256} from './abi.js';
 import {eth_call} from './eth.js';
-import {standardize_address, is_null_hex, is_valid_address, promise_queue} from './utils.js';
+import {is_null_hex, promise_queue} from './utils.js';
+import {standardize_address, is_valid_address} from './address.js';
 import {base58_from_bytes} from './base58.js';
 import {Providers} from './providers.js';
 import ADDR_TYPES from './ens-address-types.js';

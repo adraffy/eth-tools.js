@@ -1,8 +1,10 @@
 export * from '@adraffy/keccak';
 
-export * from './src/abi.js';
 export * from './src/utils.js';
+export * from './src/abi.js';
 export * from './src/base58.js';
+export * from './src/multihash.js';
+export * from './src/address.js';
 
 export * from './src/providers.js';
 export * from './src/WebSocketProvider.js';

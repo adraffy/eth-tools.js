@@ -391,6 +391,14 @@ function promise_queue(promise, callback) {
 	});
 }
 
+function data_uri_from_json(json) {
+	return 'data:application/json;base64,' + btoa(JSON.stringify(json));
+}
+
+function is_null_hex(s) {
+	return /^(0x)?[0]+$/i.test(s); // should this be 0+?
+}
+
 // accepts address as string (0x-prefix is optional) 
 // returns 0x-prefixed checksummed address 
 // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-55.md
@@ -418,34 +426,10 @@ function is_checksum_address(s) {
 	}
 }
 
-function is_null_hex(s) {
-	return /^(0x)?[0]+$/i.test(s); // should this be 0+
-}
-
-function is_multihash(s) {
-	try {
-		let v = bytes_from_base58(s);
-		return v.length >= 2 && v.length == 2 + v[1];
-	} catch (ignored) {
-		return false;
-	}
-}
-
-function fix_multihash_uri(s) {
-	if (is_multihash(s)) { // just a hash
-		return `ipfs://${s}`;
-	}
-	let match;
-	if (match = s.match(/^ipfs\:\/\/ipfs\/(.*)$/i)) { // fix "ipfs://ipfs/.."
-		return `ipfs://${match[1]}`;
-	}
-	/*
-	let match;
-	if ((match = s.match(/\/ipfs\/([1-9a-zA-Z]{32,})(\/?.*)$/)) && is_multihash(match[1])) {
-		s = `ipfs://${match[1]}${match[2]}`;
-	}
-	*/
-	return s;
+function index_mask_from_bit(i) { 
+	let index = i < 0 ? ~i : 255 - i;
+	if (index < 0 || index >= 256) throw new TypeError(`invalid bit index: ${i}`);
+	return [index >> 3, 0x80 >> (index & 7)];
 }
 
 class Uint256 {	
@@ -453,7 +437,7 @@ class Uint256 {
 		if (x instanceof Uint256) {
 			return x;
 		} else if (x instanceof Uint8Array) {
-			return new this(left_truncate_bytes(v, 32, false));
+			return new this(left_truncate_bytes(x, 32, false));
 		} else if (Number.isSafeInteger(x)) {
 			return this.from_number(x);
 		} else if (typeof x === 'string') {
@@ -518,7 +502,7 @@ class Uint256 {
 	}
 	set_number(i) {	 
 		set_bytes_to_number(this.bytes, i); // throws
-		return this;
+		return this; // chainable
 	}
 	add(x) {
 		let other = this.constructor.wrap(x).bytes; // throws
@@ -529,11 +513,41 @@ class Uint256 {
 			bytes[i] = sum;
 			carry = sum >> 8;
 		}
-		return this;
+		return this; // chainable
 	}
+	apply_bytewise_binary_op(fn, x) {
+		let other = this.constructor.wrap(x).bytes; // throws
+		this.bytes.forEach((x, i, v) => v[i] = fn(x, other[i]));
+		return this; // chainable
+	}
+	bytewise_fill(x) {
+		this.bytes.fill(x);
+		return this; // chainable
+	}
+	or(x)  { return this.apply_bytewise_binary_op((a, b) => a | b, x); } // chainable
+	and(x) { return this.apply_bytewise_binary_op((a, b) => a & b, x); } // chainable
+	xor(x) { return this.apply_bytewise_binary_op((a, b) => a ^ b, x); } // chainable
 	not() {
 		this.bytes.forEach((x, i, v) => v[i] = ~x);
 		return this;
+	}
+	set_bit(i, truthy = true) {
+		let [index, mask] = index_mask_from_bit(i);
+		if (truthy) {
+			this.bytes[index] |= mask;
+		} else {
+			this.bytes[index] &= ~mask;
+		}
+		return this; // chainable
+	}
+	flip_bit(i) {
+		let [index, mask] = index_mask_from_bit(i);
+		this.bytes[index] ^= mask;
+		return this; // chainable
+	}
+	test_bit(i) {
+		let [index, mask] = index_mask_from_bit(i);
+		return (this.bytes[index] & mask) > 0;
 	}
 	get number() {
 		let {bytes} = this;
@@ -546,7 +560,8 @@ class Uint256 {
 	get unsigned() { return unsigned_from_bytes(this.bytes); }
 	get hex() { return '0x' + hex_from_bytes(this.bytes); }
 	get min_hex() { return '0x' + hex_from_bytes(this.bytes).replace(/^0+/, ''); } // remove leading zeros
-	get dec() { return this.digit_str(10); }	
+	get bin() { return '0b' + this.digit_str(2); }
+	get dec() { return this.digit_str(10); }
 	digit_str(radix, lookup = '0123456789abcdefghjiklmnopqrstuvwxyz') {
 		if (radix > lookup.length) throw new RangeError(`radix larger than lookup: ${x}`);
 		return this.digits(radix).map(x => lookup[x]).join('');
@@ -571,7 +586,7 @@ class Uint256 {
 		return this.min_hex;
 	}
 	toString() {
-		return `Uint256(${this.hex})`;
+		return `Uint256(${this.min_hex})`;
 	}
 }
 
@@ -824,7 +839,7 @@ function base58_from_bytes(v) {
 	return String.fromCharCode(...digits.reverse().map(x => BASE_58.charCodeAt(x)));
 }
 
-function bytes_from_base58$1(s) {
+function bytes_from_base58(s) {
 	if (typeof s !== 'string') throw new TypeError('expected string');
 	let v = new Uint8Array(s.length);
 	let zeros = 0;
@@ -857,6 +872,46 @@ function bytes_from_base58$1(s) {
 		v[b] = temp;
 	}
 	return v.subarray(0, n);
+}
+
+// https://github.com/multiformats/multihash
+// sha1 = 0x11
+// sha256 = 0x12
+
+function is_multihash(s) {
+	// FIX: this is assuming base58
+	// TODO: split this into a parser
+	try {
+		let dec = new ABIDecoder(bytes_from_base58(s));
+		let type = dec.uvarint();
+		let size = dec.uvarint();
+		return dec.remaining === size;
+	} catch (ignored) {
+		return false;
+	}
+}
+
+function fix_multihash_uri(s) {
+	if (is_multihash(s)) { // just a hash
+		return `ipfs://${s}`;
+	}
+	let match;
+	if (match = s.match(/^ipfs\:\/\/ipfs\/(.*)$/i)) { // fix "ipfs://ipfs/.."
+		return `ipfs://${match[1]}`;
+	}
+	/*
+	let match;
+	if ((match = s.match(/\/ipfs\/([1-9a-zA-Z]{32,})(\/?.*)$/)) && is_multihash(match[1])) {
+		s = `ipfs://${match[1]}${match[2]}`;
+	}
+	*/
+	return s;
+}
+
+// should this be here?
+// replace ipfs:// with default https://ipfs.io
+function replace_ipfs_protocol(s) {
+	return s.replace(/^ipfs:\/\//i, 'https://ipfs.io/ipfs/');
 }
 
 // returns provider chain id
@@ -2826,14 +2881,20 @@ function parse_addr_type(x) {
 	}
 }
 
+const TYPE_721 = 'ERC-721';
+const TYPE_1155 = 'ERC-1155';
+// legacy support
+const TYPE_CRYPTO_PUNK = 'CryptoPunks';
+const TYPE_UNKNOWN = 'Unknown';
+
+
 class NFT {
 	constructor(provider, address, {strict = true, cache = true} = {}) {
 		this.provider = provider;
 		this.address = standardize_address(address); // throws
-		this.type = undefined;
+		this._type = undefined;
 		this.type_error = undefined;
 		this.strict = strict; // assumes 721 if not 1155
-		this.queue = [];
 		if (cache) {
 			this.token_uris = {};
 		}
@@ -2843,72 +2904,83 @@ class NFT {
 		return p.isProviderView ? p.get_provider() : p;
 	}
 	async get_type() {
-		let {queue} = this;
-		if (!queue) {
-			if (this.type_error) throw new Error(`Type resolution failed`, {cause: this.type_error});
-			return this.type;
-		}
-		if (queue.length == 0) {
-			try {
-				let type;
-				if (await supports_interface(await this.get_provider(), this.address, 'd9b67a26')) {
-					type = 'ERC-1155';
-				} else if (!this.strict || await supports_interface(await this.get_provider(), this.address, '80ac58cd')) {
-					type = 'ERC-721';
-				} else {
-					type = 'Unknown';
-				}
-				this.type = type;
-				this.queue = undefined;
-				queue.forEach(x => x.ful());
-				return type;
-			} catch (err) {
-				this.type_error = err;
-				this.queue = undefined;
-				queue.forEach(x => x.rej(err));
-				throw err;
+		let temp = this._type;
+		if (typeof temp === 'string') return temp;
+		if (!temp) {
+			if (this.address === '0xb47e3cd837dDF8e4c57F05d70Ab865de6e193BBB') {
+				return this._type = TYPE_CRYPTO_PUNK;
 			}
-		} else {
-			return new Promise((ful, rej) => {
-				queue.push({ful, rej});
-			});
+			this._type = temp = promise_queue((async () => {
+					if (await supports_interface(await this.get_provider(), this.address, 'd9b67a26')) {
+						return TYPE_1155;
+					} else if (!this.strict || await supports_interface(await this.get_provider(), this.address, '80ac58cd')) {
+						return TYPE_721;
+					} else if (await supports_interface(await this.get_provider(), this.address, 'd31b620d')) {
+						return TYPE_721;
+					} else {
+						return TYPE_UNKNOWN;
+					}
+				})(), 
+				type => this._type = type
+			);
 		}
+		return temp();
 	} 
+	async _uri_from_token(token) {
+		switch (await this.get_type()) {
+			case TYPE_CRYPTO_PUNK: {
+				let {dec} = token;			
+				return data_uri_from_json({
+					name: `CryptoPunk #${dec}`,
+					image: `https://www.larvalabs.com/public/images/cryptopunks/punk${dec}.png`,
+					external_url:  `https://www.larvalabs.com/cryptopunks/details/${dec}`
+				});
+			}
+			case TYPE_721: {
+				// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-721.md
+				return eth_call(
+					await this.get_provider(),
+					this.address, 
+					ABIEncoder.method('tokenURI(uint256)').number(token)
+				).then(x => x.string()).then(s => {
+					return fix_multihash_uri(s.trim());
+				});
+			}
+			case TYPE_1155: {
+				// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1155.md
+				return eth_call(
+					await this.get_provider(), 
+					this.address, 
+					ABIEncoder.method('uri(uint256)').number(token)
+				).then(x => x.string()).then(s => {
+					// 1155 standard (lowercase, no 0x)
+					return fix_multihash_uri(s.replace('{id}', token.hex.slice(2)).trim());
+				});
+			}
+			default: throw new Error(`unable to query ${token} from ${this.address}`);
+		}
+	}
 	async get_token_uri(x) {
 		let token = Uint256.wrap(x); // throws
-		let {hex} = token;
-		let {token_uris} = this;
-		let uri = token_uris?.[hex]; // lookup cache
-		if (!uri) {
-			switch (await this.get_type()) {
-				case 'ERC-721': {
-					// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-721.md
-					const SIG = 'c87b56dd'; // tokenURI(uint256)
-					uri = (await eth_call(
-						await this.get_provider(),
-						this.address, 
-						ABIEncoder.method(SIG).add_hex(hex)
-					)).string();
-					break;
+		let cache = this.token_uris;
+		if (!cache) return this._uri_from_token(token); // no cache
+		let key = token.hex;
+		let temp = cache[key];
+		if (typeof temp === 'string') return temp;
+		if (!temp) {
+			cache[key] = temp = promise_queue(
+				this._uri_from_token(token),
+				uri => {
+					if (typeof uri === 'string') {
+						cache[key] = uri;
+					} else {
+						delete cache[key];
+					}
 				}
-				case 'ERC-1155': {
-					// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1155.md
-					const SIG = '0e89341c';	// uri(uint256)
-					uri = (await eth_call(
-						await this.get_provider(), 
-						this.address, 
-						ABIEncoder.method(SIG).add_hex(hex)
-					)).string();
-					uri = uri.replace('{id}', hex.slice(2)); // 1155 standard (lowercase, no 0x)
-					break;
-				}
-				default: throw new Error(`unable to query ${x} from ${this.address}`);
-			}
-			uri = fix_multihash_uri(uri);
-			if (token_uris) token_uris[hex] = uri; // cache
+			);
 		}
-		return uri;
+		return temp();
 	}
 }
 
-export { ABIDecoder, ABIEncoder, ADDR_TYPES, ENS, ENSName, ENSOwner, FetchProvider, NFT, Providers, Uint256, WebSocketProvider, base58_from_bytes, bytes4_from_method, bytes_from_base58$1 as bytes_from_base58, bytes_from_hex, bytes_from_utf8, chain_id_from_provider, compare_arrays, determine_window_provider, eth_call, fix_multihash_uri, format_addr_type, hex_from_bytes, is_checksum_address, is_header_bug, is_multihash, is_null_hex, is_valid_address, keccak, labelhash, left_truncate_bytes, namehash, parse_addr_type, parse_avatar, promise_queue, retry, set_bytes_to_number, sha3, shake, source_from_provider, standardize_address, supports_interface, unsigned_from_bytes, utf8_from_bytes };
+export { ABIDecoder, ABIEncoder, ADDR_TYPES, ENS, ENSName, ENSOwner, FetchProvider, NFT, Providers, Uint256, WebSocketProvider, base58_from_bytes, bytes4_from_method, bytes_from_base58, bytes_from_hex, bytes_from_utf8, chain_id_from_provider, compare_arrays, data_uri_from_json, determine_window_provider, eth_call, fix_multihash_uri, format_addr_type, hex_from_bytes, is_checksum_address, is_header_bug, is_multihash, is_null_hex, is_valid_address, keccak, labelhash, left_truncate_bytes, namehash, parse_addr_type, parse_avatar, promise_queue, replace_ipfs_protocol, retry, set_bytes_to_number, sha3, shake, source_from_provider, standardize_address, supports_interface, unsigned_from_bytes, utf8_from_bytes };

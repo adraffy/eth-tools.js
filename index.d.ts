@@ -1,3 +1,5 @@
+type Uint256Like = string|number|Uint8Array|Uint256;
+
 export class Uint256 {
 	zero(): Uint256;
 	from_str(s: string): Uint256;  
@@ -6,13 +8,23 @@ export class Uint256 {
 	from_bytes(v: Uint8Array): Uint256;
 	from_number(i: number): Uint256;
 	clone(): Uint256;
-	compare(other:string|number|Uint8Array|Uint256): number;
+	compare(other: Uint256Like): number;
 	set_number(i: number): Uint256;
-	add(other:string|number|Uint8Array|Uint256): Uint256;
+	add(other: Uint256Like): Uint256;
+	apply_bytewise_binary_op(fn: any, other: Uint256Like): Uint256;
+	bytewise_fill(byte: number): Uint256;
+	or(other: Uint256Like): Uint256;
+	and(other: Uint256Like): Uint256;
+	xor(other: Uint256Like): Uint256;
 	not(): Uint256;
+	set_bit(index: number, truthy?: any): Uint256;
+	flip_bit(index: number): Uint256;
+	test_bit(index: number): boolean;
 	get number(): number;
 	get unsigned(): number;
 	get hex(): string;
+	get min_hex(): string;
+	get bin(): string;
 	get dec(): string;
 	digit_str(radix:number, lookup:string|object[]): string;
 	digits(radix:number): number[];

@@ -3,8 +3,10 @@ import {
 	is_checksum_address, 
 	is_valid_address,
 	is_null_hex,
-	promise_queue
+	promise_queue,
+	data_uri_from_json
 } from '../index.js';
+import fetch from 'node-fetch';
 
 let ADDRESSES = [
 	'0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359',
@@ -56,3 +58,5 @@ try {
 	threw = true;
 }
 if (!threw) throw new Error(`didn't throw`);
+
+console.log(await fetch(data_uri_from_json({a: 1})).then(x => x.json()));

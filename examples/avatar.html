@@ -220,16 +220,17 @@ import {
 } from '../dist/eth-tools.min.js';
 import {ens_normalize} from '../../ens-normalize.js/dist/ens-normalize.min.js';
 
-let providers = new Providers()
+const providers = new Providers()
 	.add_static(1, new FetchProvider({url: 'https://cloudflare-eth.com'}))
 	.add_static(137, new FetchProvider({url: 'https://rpc-mainnet.matic.network'}));
-let window_provider;
+
+	let window_provider;
 determine_window_provider().then(p => {
 	window_provider = p;
 	providers.add_dynamic(p);
 }).catch(() => {});
 
-let ens = new ENS({provider: providers.view(1), ens_normalize});
+const ens = new ENS({provider: providers.view(1), ens_normalize});
 
 const primary_arrows = document.querySelector('#arrows');
 const input_field = document.querySelector('#input_field');

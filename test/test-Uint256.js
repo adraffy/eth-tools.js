@@ -6,6 +6,16 @@ const N = 100000;
 console.log(Uint256.from_number(255).digits(2));
 console.log(Uint256.from_number(343).digits(7));
 
+console.log([
+	'name()', 
+	'symbol()', 
+	'totalSupply()', 
+	'balanceOf(address)', 
+	'ownerOf(uint256)', 
+	'approve(address,uint256)', 
+	'safeTransferFrom(address,address,uint256)'
+].reduce((a, x) => a.xor(keccak().update(x).bytes), Uint256.zero()).hex.slice(0, 10));
+
 for (let i = 0; i < N; i++) {
 	let u0 = Uint256.from_bytes(random_bytes(Math.random() * 32|0));	
 	let u1 = Uint256.from_hex(u0.hex);

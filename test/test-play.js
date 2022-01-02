@@ -17,7 +17,7 @@ console.log(await ens.resolve('adrafFy.eth').then(x => x.get_display()));
 provider.disconnect();
 */
 
-import {ENS} from '../index.js';
+import {ENS, keccak, is_multihash, Uint256} from '../index.js';
 import {WS as provider} from './nodejs-provider.js';
 
 let ens = new ENS({provider});
@@ -37,3 +37,6 @@ console.log(await name.get_texts(['com.twitter']));
 console.log(await name.get_texts());
 
 console.log(await ens.get_dot_eth_owner('raffy'));
+
+
+console.log(is_multihash('QmRwgn6qNPwzdDJfpPuSeq2Qjodi6z3n5QmdKk82fUJb1Y'));
