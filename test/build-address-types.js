@@ -6,9 +6,7 @@ function local_file(name) {
 }
 
 let res = await fetch('https://raw.githubusercontent.com/satoshilabs/slips/master/slip-0044.md');
-if (res.status !== 200) {
-	throw new Error('wtf');
-}
+if (res.status !== 200) throw new Error('wtf');
 let text = await res.text();
 
 let map = {};
@@ -21,14 +19,16 @@ for (let line of text.split('\n')) {
 	if (name.length == 0) continue;
 	let prev = map[name];
 	if (prev === false) continue; // ignored
+	if (/^[0-9]+$/.test(name)) { // if the name is also an integer...
+		console.log(`Digit name: ${line}`);
+		continue; 
+	}
 	if (typeof prev === 'number') {
 		map[name] = false;
-		console.log(`conflict: ${name}`);
+		console.log(`Conflict: ${line}`);
 	}
 	map[name] = parseInt(coin);
 }
-
-//console.log(map);
 
 // remove coins name conflicts
 for (let [k, v] of Object.entries(map)) {
@@ -37,6 +37,4 @@ for (let [k, v] of Object.entries(map)) {
 	}	
 }
 
-writeFileSync(local_file('../ens-address-types.js'), `export default ${JSON.stringify(map, null, 2)}`);
-
-
+writeFileSync(local_file('../src/ens-address-types.js'), `export default ${JSON.stringify(map, null, 2)}`);

@@ -9,8 +9,10 @@
 <pre>Loading...</pre>
 <script type="module">	
 import {FetchProvider, ENS} from '../dist/eth-tools.min.js';
+import {ens_normalize} from '../../ens-normalize.js/dist/ens-normalize.min.js'; 
 let ens = new ENS({
 	provider: new FetchProvider({url: 'https://cloudflare-eth.com/'}),
+	ens_normalize
 });
 const pre = document.querySelector('pre');
 async function run() {
@@ -24,10 +26,12 @@ async function run() {
 		if (label.includes('.')) {
 			throw new Error('label cannot contain stops (.)');
 		}
-		pre.innerHTML = JSON.stringify({
-			label,
-			available: await ens.is_dot_eth_available(label) // this does not normalize
-		}, null, 2);
+		let owner = await ens.get_dot_eth_owner(label);
+		let available = !owner;
+		if (available) {
+			available = await ens.is_dot_eth_available(label);
+		}
+		pre.innerHTML = JSON.stringify({label, available, owner}, null, 2);
 	} catch (err) {
 		pre.innerHTML = `Error: ${err.message}`;
 	}

@@ -37,7 +37,7 @@ export class ABIDecoder {
 }
 
 export class ABIEncoder {
-	method(method: string): ABIEncoder;
+	method(method: string|Uint8Array): ABIEncoder;
 	constructor(offset?: number, capacity?: number);
 	reset(): ABIEncoder;
 	build_hex(): string;
@@ -57,24 +57,25 @@ export function left_truncate_bytes(v: Uint8Array): Uint8Array;
 
 export function is_null_hex(s: string): boolean;
 export function is_valid_address(s: string): boolean;
-export function checksum_address(s: string): string;
+export function is_checksum_address(s: string): boolean;
+export function standardize_address(s: string, checksum?: boolean): string;
 
 export function is_multihash(s: string): boolean;
 export function fix_multihash_uri(s: string): string;
 
 type Provider = any;
 
-declare interface ProvideLike<T> {
+declare class ProvideLike<T> {
 	request(obj: object): Promise<object>;
 	emit(event: string|Symbol, ...args: any[]): boolean;
 	on(event: string|Symbol, listener: any): T;
 	removeListener(event: string|Symbol, listener: any): T;
 	disconnect(): void;
 }
-export class FetchProvider implements ProvideLike<FetchProvider> {
+export class FetchProvider extends ProvideLike<FetchProvider> {
 	constructor(params: {url: string, fetch?: any, request_timeout?: number, idle_timeout?: number});
 }
-export class WebSocketProvider implements ProvideLike<WebSocketProvider> {
+export class WebSocketProvider extends ProvideLike<WebSocketProvider> {
 	constructor(params: {url: string, WebSocket?: any, request_timeout?: number, idle_timeout?: number});
 	set idle_timeout(t: number);
 }
@@ -91,19 +92,38 @@ export class ProviderView extends Providers {
 	get_provider(): Promise<Provider>;
 }
 
-type Address = string;
+export class ENSOwner {
+	readonly ens: ENS;
+	readonly address: string;
+	get_primary_name(): Promise<string>;
+	resolve(): Promise<ENSName>;
+}
 
 export class ENSName {
-	ens: ENS;
-	get_address(): Promise<Address>;
-	get_owner(): Promise<Address>;
-	get_primary(): Promise<string>;
+	readonly ens: ENS;
+	readonly input: string;
+	readonly name: string;
+	readonly node: Uint256;
+	readonly resolver: string;
+	readonly resolved: Date;
+	assert_valid_resolver(): void;
+	get_address(): Promise<string>;
+	get_owner(): Promise<ENSOwner>;	
+	get_owner_address(): Promise<string>;
+	get_owner_primary_name(): Promise<string>;
+	is_owner_primary_name(): Promise<boolean>;
+	is_input_normalized(): boolean;
+	is_equivalent_name(name: string): boolean;
+	assert_equivalent_name(name: string): void; 
+	is_input_display(): Promise<boolean>;
+	get_display_name(): Promise<string>;
 	get_avatar(): Promise<{type: string}>;
-	get_display(throw_on_invalid?: boolean): Promise<string>;
 	get_text(key: string): Promise<string>;
-	get_texts(keys: string[], output?: object): Promise<object>;
+	get_texts(keys: string[]): Promise<Record<string,string>>;
 	get_addr(addr: any): Promise<Uint8Array>;
-	get_addrs(addrs: any[], output?: object): Promise<object>;
+	get_addrs(addrs: any[], named?: boolean): Promise<Record<any, Uint8Array>>;
+	get_content(): Promise<{hash: Uint8Array, url?: string}>;
+	get_pubkey(): Promise<{x: Uint256, y: Uint256}>;
 }
 
 type Normalizer = (name: string) => string;
@@ -111,34 +131,15 @@ type Normalizer = (name: string) => string;
 export class ENS {
 	constructor({
 		provider: any,
-		registry: Address,
+		registry: string,
 		ens_normalize: Normalizer
 	});
-	resolve(name: string): Proimse<ENSName>;
 	normalize(name: string): string;
-	get_resolver(node: Uint256): Promise<Address>;
+	labelhash(label: string|Uint256): Uint256;
+	owner(address: string): ENSOwner;
+	resolve(name: string): Promise<ENSName>;
+	get_resolver(node: Uint256): Promise<string>;
+	primary_from_address(address: string): Promise<string>;
 	is_dot_eth_available(label: string): Promise<boolean>;
+	get_dot_eth_owner(label: string): Promise<ENSOwner>;
 }
-
-
-
-
-
-/*
-type ENSInput = string|Uint256|{name?:string, node?:Uint256};
-type CoinType = string|number;
-
-export function set_normalizer(fn: CallableFunction): void;
-export function labelhash(label: string): Uint256;
-export function node_from_ens_name(name: string): Uint256;
-export function ens_resolve(provider: Provider, input: ENSInput): {resolver: string, node: Uint256, name?: string};
-export function lookup_address(provider: Provider, input: ENSInput): string;
-export function lookup_owner(provider: Provider, input: ENSInput): string;
-export function ens_name_for_address(provider: Provider, address: string): string;
-export function ens_avatar(provider: Provider, input: ENSInput): string;
-export function parse_avatar(avatar: string, provider?: Provider, address?: string): {type: string};
-export function ens_text_record(provider: Provider, input: ENSInput, text: string|string[]): {text?: {}};
-export function ens_addr_record(provider: Provider, input: ENSInput, text: CoinType|CoinType[]): {addr?: {}};
-export function ens_contenthash_record(provider: Provider, input: ENSInput): {contenthash?: string, contenthash_url?: string};
-export function ens_pubkey_record(provider: Provider, input: ENSInput): {pubkey?: {x: Uint256, y: Uint256}};
-*/

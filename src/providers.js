@@ -12,13 +12,24 @@ export async function source_from_provider(provider) {
 	return 'Unknown';
 }
 
+function is_chain_id(x) {
+	return Number.isSafeInteger(x);
+}
+
 function parse_chain_id(x) {
 	if (typeof x === 'string') x = parseInt(x);
-	if (!Number.isSafeInteger(x)) throw new TypeError(`expected chain: ${x}`);
+	if (!is_chain_id(x)) throw new TypeError(`expected chain: ${x}`);
 	return x;
 }
 
 export class Providers {
+	/*
+	static wrap(provider) {
+		if (provider instanceof this) return provider;
+		let p = new this();
+		p.add_dynamic(provider);
+		return p;
+	}
 	static from_map(map) {
 		if (typeof map !== 'object') throw new TypeError('expected object');
 		let p = new Providers();
@@ -27,6 +38,7 @@ export class Providers {
 		}
 		return p;
 	}
+	*/
 	constructor({cooldown = 30000} = {}) {
 		this.queue = [];
 		this.cooldown = cooldown;
@@ -51,15 +63,16 @@ export class Providers {
 		}
 		return this; // chainable
 	}
+	known_chain_ids() {
+		return [... new Set(this.queue.filter(x => typeof x.chain_id === 'number'))]
+	}
 	disconnect() {
 		for (let {provider} of this.queue) {
 			provider.disconnect?.();
 		}
 	}
 	async find_provider(chain_id, required = false, dynamic = true) {
-		if (chain_id !== undefined && !Number.isSafeInteger(chain_id)) {
-			throw new TypeError(`expected chain_id integer: ${chain_id}`);
-		}
+		if (!is_chain_id(chain_id)) throw new TypeError(`expected chain_id integer: ${chain_id}`);
 		if (dynamic) {
 			await Promise.all(this.queue.filter(x => x.chain_id === null).map(async rec => {
 				try {
@@ -127,34 +140,28 @@ export function is_header_bug(err) {
 	return err.code === -32000 && err.message === 'header not found';
 }
 
-// fix the bug above
 export function retry(provider, {retry = 2, delay = 1000} = {}) {
 	if (typeof retry !== 'number' || retry < 1) throw new TypeError('expected retry > 0');
 	if (typeof delay !== 'number' || delay < 0) throw new TypeError('expected delay >= 0');
 	if (!provider) return;
+	if (provider.isRetryProvider) return provider;
 	async function request(obj) {
-		try {
-			return await provider.request(obj);
-		} catch (err) {
-			if (!is_header_bug(err)) throw err;
-			// make a new request that isn't dangerous
-			// until we run out of tries or it succeeds
-			let n = retry;
-			while (true) {
-				try {
-					await provider.request({method: 'eth_chainId'});
-					break;
-				} catch (retry_err) {
-					if (!is_header_bug(retry_err) && --n == 0) throw err;
-				}
+		while (true) {
+			try {
+				return await provider.request(obj);
+			} catch (err) {
+				if (!is_header_bug(err) || !(retry-- > 0)) throw err;
+				await new Promise(ful => setTimeout(ful, delay));
 			}
-			// then issue the request again
-			return provider.request(obj);
 		}
 	}
 	return new Proxy(provider, {
-		get: function(obj, prop) {
-			return prop === 'request' ? request : obj[prop];
+		get: function(obj, prop) {		
+			switch (prop) {
+				case 'request': return request;
+				case 'isRetryProvider': return true;
+				default: return obj[prop];
+			}	
 		}
 	});
 }

@@ -15,13 +15,13 @@ button {
 	cursor: pointer;
 }
 .arrows {
-	display: inline-block;
-	background: url('data:image/svg+xml;utf8,%3Csvg%20viewBox%3D%220%200%201000%201000%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cpath%20d%3D%22M990%2C377.5H622.5l137.4-137.4C690.4%2C170.7%2C598.2%2C132.5%2C500%2C132.5c-98.2%2C0-190.4%2C38.2-259.9%2C107.6C170.7%2C309.6%2C132.5%2C401.8%2C132.5%2C500c0%2C98.2%2C38.2%2C190.4%2C107.6%2C259.9c69.4%2C69.4%2C161.7%2C107.6%2C259.9%2C107.6c98.2%2C0%2C190.4-38.2%2C259.9-107.6c5.8-5.8%2C11.4-11.8%2C16.7-17.9l92.2%2C80.7C778.9%2C925.2%2C647%2C990%2C500%2C990C229.4%2C990%2C10%2C770.6%2C10%2C500C10%2C229.4%2C229.4%2C10%2C500%2C10c135.3%2C0%2C257.8%2C54.9%2C346.5%2C143.5L990%2C10V377.5z%22%2F%3E%3C%2Fsvg%3E');
+	width: 2rem;
+	padding-bottom: 100%;
+	animation: spin 2s infinite linear;
+	user-select: none;
+	background-image: url('data:image/svg+xml;utf8,%3Csvg%20viewBox%3D%220%200%201000%201000%22%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%3E%3Cpath%20d%3D%22M990%2C377.5H622.5l137.4-137.4C690.4%2C170.7%2C598.2%2C132.5%2C500%2C132.5c-98.2%2C0-190.4%2C38.2-259.9%2C107.6C170.7%2C309.6%2C132.5%2C401.8%2C132.5%2C500c0%2C98.2%2C38.2%2C190.4%2C107.6%2C259.9c69.4%2C69.4%2C161.7%2C107.6%2C259.9%2C107.6c98.2%2C0%2C190.4-38.2%2C259.9-107.6c5.8-5.8%2C11.4-11.8%2C16.7-17.9l92.2%2C80.7C778.9%2C925.2%2C647%2C990%2C500%2C990C229.4%2C990%2C10%2C770.6%2C10%2C500C10%2C229.4%2C229.4%2C10%2C500%2C10c135.3%2C0%2C257.8%2C54.9%2C346.5%2C143.5L990%2C10V377.5z%22%2F%3E%3C%2Fsvg%3E');
 	background-size: contain;
 	background-repeat: no-repeat;
-	width: 2rem;
-	height: 2rem;
-	animation: spin 2s infinite linear;
 }
 @keyframes spin {
 	from { transform:rotate(0deg);	 }
@@ -121,7 +121,6 @@ label {
 }
 #avatar .arrows {
 	width: 80px;
-	height: 80px;	
 }
 #avatar img {
 	display: block;
@@ -199,7 +198,7 @@ Examples:
 </div>
 <div id="input" class="row">
 <input id="input_field" size="1" placeholder="Name, Address, or Avatar String">
-<div class="arrows hide"></div>
+<div id="arrows" class="hide"><div class="arrows"></div></div>
 <button id="link_btn">Copy Link</button>
 <button id="resolve_btn">Fetch</button>
 </div>
@@ -232,7 +231,7 @@ determine_window_provider().then(p => {
 
 let ens = new ENS({provider: providers.view(1), ens_normalize});
 
-const primary_arrows = document.querySelector('#input .arrows');
+const primary_arrows = document.querySelector('#arrows');
 const input_field = document.querySelector('#input_field');
 const text_field = document.querySelector('#text_field');
 const addr_field = document.querySelector('#addr_field');
@@ -287,7 +286,7 @@ function create_error(s, caution = false) {
 }
 
 function parse_keys(s) {
-	return [...new Set(s.split(/\s+/).filter(x => x.length > 0))];
+	return [...new Set(s.split(/\s+/).filter(x => x))];
 }
 
 function html_escape(s) {
@@ -319,11 +318,9 @@ function fix_uri(uri, context) {
 }
 
 function create_avatar_row() {
-	let arrows = document.createElement('div');
-	arrows.classList.add('arrows');
 	let avatar = document.createElement('div');
 	avatar.classList.add('avatar');
-	avatar.append(arrows);
+	avatar.innerHTML = '<div><div class="arrows"></div></div>'
 	let row = document.createElement('div');
 	row.id = 'avatar';
 	row.append(avatar);
@@ -354,10 +351,6 @@ function load_image_into(parent, uri) {
 		a.innerHTML = err?.message ?? 'Error occurred while loading image';
 	});
 	img.src = http;	
-}
-
-function window_ethereum_available() {
-	return typeof window.ethereum !== 'undefined';
 }
 
 async function get_ethereum_account() {
@@ -400,19 +393,19 @@ async function resolve0(output, input) {
 	let resolved;
 	try {			
 		if (input.startsWith('eip155:')) { // allow avatar string input
-			account = await get_ethereum_account();
+			account = await get_ethereum_account().catch(() => {});
 			resolved = await parse_avatar(input, providers, account);
 			resolved.avatar = input;
 			if (account) {
 				resolved.account = account;
 			}
 		} else {			
-			name = await ens.resolve(input, {throws: true});
+			name = await ens.resolve(input);
 			let parsed = await name.get_avatar();
 			resolved = {
 				name: name.name,
-				node: name.node.hex,
-				resolver: name.resolver.hex,
+				node: name.node,
+				resolver: name.resolver,
 				avatar: await name.get_text('avatar'),
 				...parsed
 			};
@@ -431,10 +424,6 @@ async function resolve0(output, input) {
 	let pre = document.createElement('pre');
 	pre.innerHTML = JSON.stringify(resolved, null, 2);
 	switch (resolved.type) {
-		/*case 'none': {
-			output.append(create_error('<b>Name not registered</b>', pre));
-			return; // nothing more to do
-		}*/
 		case 'unknown': {
 			output.append(create_error('Unknown avatar format'), pre);
 			break;

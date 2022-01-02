@@ -1,11 +1,11 @@
 import {ABIEncoder, Uint256} from './abi.js';
 import {eth_call, supports_interface} from './eth.js';
-import {checksum_address, fix_multihash_uri} from './utils.js';
+import {standardize_address, fix_multihash_uri} from './utils.js';
 
 export class NFT {
 	constructor(provider, address, {strict = true, cache = true} = {}) {
 		this.provider = provider;
-		this.address = checksum_address(address); // throws
+		this.address = standardize_address(address); // throws
 		this.type = undefined;
 		this.type_error = undefined;
 		this.strict = strict; // assumes 721 if not 1155

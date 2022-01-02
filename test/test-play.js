@@ -17,15 +17,23 @@ console.log(await ens.resolve('adrafFy.eth').then(x => x.get_display()));
 provider.disconnect();
 */
 
-import {FetchProvider, Providers} from '../index.js';
-import fetch from 'node-fetch';
+import {ENS} from '../index.js';
+import {WS as provider} from './nodejs-provider.js';
 
-let p = Providers.from_map({
-	1: new FetchProvider({url: 'https://cloudflare-eth.com', fetch}),
-	137: new FetchProvider({url: 'https://rpc-mainnet.maticvigil.com', fetch})
-});
+let ens = new ENS({provider});
 
-console.log(await (await p.find_provider(1)).request({method: 'web3_clientVersion'}));
-console.log(await (await p.find_provider(137)).request({method: 'web3_clientVersion'}));
+//console.log((await ens.get_dot_eth_owner('raffy')).address);
 
-p.disconnect();
+let name = await ens.resolve('raffy.eth');
+console.log(name);
+
+console.log(await name.get_addr(3));
+console.log(await name.get_addr(60));
+console.log(await name.get_address());
+console.log(await name.get_owner());
+
+console.log(await name.get_text('display'));
+console.log(await name.get_texts(['com.twitter']));
+console.log(await name.get_texts());
+
+console.log(await ens.get_dot_eth_owner('raffy'));

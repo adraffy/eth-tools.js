@@ -1,5 +1,5 @@
 import {keccak, bytes_from_hex, hex_from_bytes, bytes_from_utf8, utf8_from_bytes} from '@adraffy/keccak';
-import {checksum_address, compare_arrays} from './utils.js';
+import {standardize_address, compare_arrays} from './utils.js';
 
 export class Uint256 {	
 	static wrap(x) { // tries to avoid a copy
@@ -98,6 +98,7 @@ export class Uint256 {
 	}
 	get unsigned() { return unsigned_from_bytes(this.bytes); }
 	get hex() { return '0x' + hex_from_bytes(this.bytes); }
+	get min_hex() { return '0x' + hex_from_bytes(this.bytes).replace(/^0+/, ''); } // remove leading zeros
 	get dec() { return this.digit_str(10); }	
 	digit_str(radix, lookup = '0123456789abcdefghjiklmnopqrstuvwxyz') {
 		if (radix > lookup.length) throw new RangeError(`radix larger than lookup: ${x}`);
@@ -120,7 +121,7 @@ export class Uint256 {
 		return digits.reverse();
 	}
 	toJSON() {
-		return this.hex;
+		return this.min_hex;
 	}
 	toString() {
 		return `Uint256(${this.hex})`;
@@ -201,6 +202,10 @@ export class ABIDecoder {
 		this.pos = pos + 1;
 		return buf[pos];
 	}
+	read_addr_bytes() {
+		if (this.read_bytes(12).some(x => x > 0)) throw new TypeError('invalid address: expected zero');
+		return this.read_bytes(20);
+	}
 	// these all effectively copy 
 	bytes(n) { return this.read_bytes(n).slice(); }
 	boolean() { return this.number() > 0; }	
@@ -209,10 +214,8 @@ export class ABIDecoder {
 	string() { return utf8_from_bytes(this.read_memory()); }	
 	memory() { return this.read_memory().slice(); }
 	addr(checksum = true) {
-		if (this.read_bytes(12).some(x => x > 0)) throw new TypeError('invalid address: expected zero');
-		let v = this.read_bytes(20);
-		let addr = hex_from_bytes(v);
-		return checksum ? checksum_address(addr) : `0x${addr}`; 
+		let addr = hex_from_bytes(this.read_addr_bytes());
+		return checksum ? standardize_address(addr) : `0x${addr}`; 
 	}
 	//https://github.com/multiformats/unsigned-varint
 	uvarint() { 
@@ -230,9 +233,15 @@ export class ABIDecoder {
 	}
 }
 
+const METHOD_CACHE = {};
+
 export function bytes4_from_method(x) {
 	if (x.includes('(')) {
-		return keccak().update(x).bytes.subarray(0, 4);
+		let v = METHOD_CACHE[x];
+		if (!v) {
+			METHOD_CACHE[x] = v = keccak().update(x).bytes.subarray(0, 4);
+		}
+		return v.slice();
 	} else {
 		try {
 			let v = x instanceof Uint8Array ? x : bytes_from_hex(x);
@@ -245,7 +254,7 @@ export function bytes4_from_method(x) {
 }
 
 export class ABIEncoder {
-	static method(method) {
+	static method(method) {		
 		// method signature doesn't contribute to offset
 		return new ABIEncoder(4).add_bytes(bytes4_from_method(method)); 
 	}

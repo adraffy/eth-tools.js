@@ -22,5 +22,19 @@ export default [
 				toplevel: true
 			}
 		})]
+	},
+	{
+		input: 'src/lib-browser.js',
+		output: {
+			file: 'dist/eth-tools-browser.min.js'
+		},
+		plugins: [nodeResolve(), terser({
+			compress: {
+				toplevel: true
+			},
+			mangle: { 
+				toplevel: true
+			}
+		})]
 	}
 ];

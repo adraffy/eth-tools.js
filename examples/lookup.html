@@ -8,7 +8,7 @@
 <body>
 <pre>Loading...</pre>
 <script type="module">	
-import {FetchProvider, ENS} from '../dist/eth-tools.min.js';
+import {FetchProvider, ENS, hex_from_bytes} from '../dist/eth-tools.min.js';
 import {ens_normalize} from '../../ens-normalize.js/dist/ens-normalize.min.js'; 
 let ens = new ENS({
 	provider: new FetchProvider({url: 'https://cloudflare-eth.com/'}),
@@ -24,20 +24,28 @@ async function run() {
 	pre.innerHTML = `Resolving ${input}...`;
 	try {
 		let name = await ens.resolve(input);
-		let address = await name.get_address();
-		let primary = await name.get_primary();
-		let texts = await name.get_texts(['email', 'com.twitter']);
-		let content = await name.get_content();
-		//let addrs = await name.get_addrs(['BTC', 'LTC']);
+		let owner = await name.get_owner();
 		pre.innerHTML = JSON.stringify({
 			input,
-			name,
-			node: name.node.hex,
-			address,
+			name: name.name,
+			node: name.node,
 			resolver: name.resolver,
-			texts,
-			//addrs
-		}, null, 2);
+			owner: {
+				address: owner.address,
+				primary: await owner.get_primary_name()
+			},
+			node: name.node.hex,
+			resolver: name.resolver,
+			text: await name.get_texts(['email', 'com.twitter', 'com.github']),
+			addr: await name.get_addrs(['BTC', 'ETH']),
+			content: await name.get_content(),
+			pubkey: await name.get_pubkey(),
+		}, (k, v) => {
+			if (v instanceof Uint8Array) {
+				return v.length > 0 ? `HexData(${hex_from_bytes(v)})` : null;	
+			}
+			return v;
+		}, 2);
 	} catch (err) {
 		pre.innerHTML = `Error: ${err.message}`;
 	}

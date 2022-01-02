@@ -19,3 +19,5 @@ for (let [input, output] of KNOWN) {
 		throw new Error('wtf');
 	}
 }
+
+console.log('OK');

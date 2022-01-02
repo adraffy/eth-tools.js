@@ -6,6 +6,7 @@ for (let test of [
 	'readme',
 	'ws',
 	'fetch',
+	'providers',
 	'ens',
 	'nft'
 ]) {	

@@ -8,7 +8,7 @@ let name = await ens.resolve('bRAntly.eth');
 
 console.log(await name.get_address());
 // "0x983110309620D911731Ac0932219af06091b6744"
-console.log(await name.get_primary());
+console.log(await name.get_owner_primary_name());
 // "brantly.eth"
 console.log((await name.get_content()).hash);
 // UintArray(...)
@@ -18,7 +18,7 @@ console.log(await name.get_addrs(['BTC', 'XCH']));
 // {"BTC": ..., "XCH": ...}
 console.log(await ens.is_dot_eth_available('brantly'));
 // false
-console.log((await ens.resolve('0x983110309620D911731Ac0932219af06091b6744')).name);
+console.log(await ens.primary_from_address('0x983110309620D911731Ac0932219af06091b6744'));
 // "brantly.eth"
 
 // 
@@ -47,15 +47,15 @@ console.log(dec.addr());    // read 40-char hex-string (0x-prefixed w/checksum)
 
 //
 
-import {checksum_address, is_valid_address, is_checksum_address} from '../index.js';
+import {standardize_address, is_valid_address, is_checksum_address} from '../index.js';
 
 let a = '0xb8c2c29ee19d8307cb7255e1cd9cbde883a267d5';
-let b = checksum_address(a);
+let b = standardize_address(a);
 console.log(b); 
 // "0xb8c2C29ee19D8307cb7255e1Cd9CbDE883A267d5"
 console.log(a.toLowerCase() === b.toLowerCase());
 // true
-console.log([is_valid_address(a), is_checksum_address(b)]);
+console.log([is_valid_address(a), is_valid_address(b)]);
 // [true, true]
 console.log([is_checksum_address(a), is_checksum_address(b)]);
 // [false, true]

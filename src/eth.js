@@ -21,6 +21,5 @@ export async function eth_call(provider, tx, enc = null, tag = 'latest') {
 }
 
 export async function supports_interface(provider, contract, sig) {
-	const SIG = '01ffc9a7' // supportsInterface(bytes4)
-	return (await eth_call(provider, contract, ABIEncoder.method(SIG).bytes(bytes4_from_method(sig)))).boolean();
+	return (await eth_call(provider, contract, ABIEncoder.method('supportsInterface(bytes4)').bytes(bytes4_from_method(sig)))).boolean();
 }
