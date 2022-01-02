@@ -20,6 +20,6 @@ export async function eth_call(provider, tx, enc = null, tag = 'latest') {
 	}
 }
 
-export async function supports_interface(provider, contract, sig) {
-	return (await eth_call(provider, contract, ABIEncoder.method('supportsInterface(bytes4)').bytes(bytes4_from_method(sig)))).boolean();
+export async function supports_interface(provider, contract, method) {
+	return (await eth_call(provider, contract, ABIEncoder.method('supportsInterface(bytes4)').bytes(bytes4_from_method(method)))).boolean();
 }

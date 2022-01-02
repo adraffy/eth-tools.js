@@ -15,12 +15,19 @@ export class NFT {
 	constructor(provider, address, {strict = true, cache = true} = {}) {
 		this.provider = provider;
 		this.address = standardize_address(address); // throws
-		this._type = undefined;
-		this.type_error = undefined;
 		this.strict = strict; // assumes 721 if not 1155
+		this._type = undefined;
+		this._name = undefined;
+		this._supply = undefined;
 		if (cache) {
 			this.token_uris = {};
 		}
+	}
+	async call(...args) {
+		return eth_call(await this.get_provider(), this.address, ...args);
+	}
+	async supports(method) {
+		return supports_interface(await this.get_provider(), this.address, method);
 	}
 	async get_provider() {
 		let p = this.provider;
@@ -34,11 +41,22 @@ export class NFT {
 				return this._type = TYPE_CRYPTO_PUNK;
 			}
 			this._type = temp = promise_queue((async () => {
-					if (await supports_interface(await this.get_provider(), this.address, 'd9b67a26')) {
+					if (await this.supports('d9b67a26')) {
+						// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1155.md
 						return TYPE_1155;
-					} else if (!this.strict || await supports_interface(await this.get_provider(), this.address, '80ac58cd')) {
+					} else if (!this.strict || await this.supports('80ac58cd')) {
+						// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-721.md
 						return TYPE_721;
-					} else if (await supports_interface(await this.get_provider(), this.address, 'd31b620d')) {
+					} else if (await this.supports('d31b620d')) { 
+						/*console.log([
+							'name()', 
+							'symbol()', 
+							'totalSupply()', 
+							'balanceOf(address)', 
+							'ownerOf(uint256)', 
+							'approve(address,uint256)', 
+							'safeTransferFrom(address,address,uint256)'
+						].reduce((a, x) => a.xor(keccak().update(x).bytes), Uint256.zero()).hex.slice(0, 10));*/
 						return TYPE_721;
 					} else {
 						return TYPE_UNKNOWN;
@@ -60,22 +78,12 @@ export class NFT {
 				});
 			}
 			case TYPE_721: {
-				// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-721.md
-				return eth_call(
-					await this.get_provider(),
-					this.address, 
-					ABIEncoder.method('tokenURI(uint256)').number(token)
-				).then(x => x.string()).then(s => {
+				return this.call(ABIEncoder.method('tokenURI(uint256)').number(token)).then(x => x.string()).then(s => {
 					return fix_multihash_uri(s.trim());
 				});
 			}
 			case TYPE_1155: {
-				// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1155.md
-				return eth_call(
-					await this.get_provider(), 
-					this.address, 
-					ABIEncoder.method('uri(uint256)').number(token)
-				).then(x => x.string()).then(s => {
+				return this.call(ABIEncoder.method('uri(uint256)').number(token)).then(x => x.string()).then(s => {
 					// 1155 standard (lowercase, no 0x)
 					return fix_multihash_uri(s.replace('{id}', token.hex.slice(2)).trim());
 				});
@@ -104,4 +112,54 @@ export class NFT {
 		}
 		return temp();
 	}
+	async get_name() {
+		let temp = this._name;
+		if (typeof temp === 'string') return temp;
+		if (!temp) {
+			switch (await this.get_type()) {
+				case TYPE_CRYPTO_PUNK:
+				case TYPE_721: {
+					this._name = temp = promise_queue(
+						this.call(ABIEncoder.method('name()')).then(x => x.string()),
+						name => this._name = name
+					);
+					break;
+				}
+			}
+		}
+		return temp();
+	}
+	async get_supply() {
+		let temp = this._supply;
+		if (typeof temp === 'number') return temp;
+		if (!temp) {
+			switch (await this.get_type()) {
+				case TYPE_CRYPTO_PUNK:
+				case TYPE_721: {
+					this._supply = temp = promise_queue(
+						this.call(ABIEncoder.method('totalSupply()')).then(x => x.number()).catch(err => {
+							if (err.reverted) return NaN; // not ERC721Enumerable 
+							throw err;
+						}),
+						n => this._supply = n
+					);
+					break;
+				}				
+				default: {
+					// unknown supply
+					return this._supply = NaN;
+				}
+			}
+		}
+		return temp();
+	}
+	/*
+	async get_balance(token, owner) {
+		// this could cache
+
+	}
+	async _get_balance(token, owner) {
+
+	}
+	*/
 }

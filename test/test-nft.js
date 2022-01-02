@@ -24,3 +24,8 @@ console.log(await cp.get_token_uri(0));
 let wtf = new NFT(provider, '0x2A46f2fFD99e19a89476E2f62270e0a35bBf0756');
 
 console.log(await wtf.get_type());
+
+console.log(await nfs.get_supply());
+console.log(await nfs.get_name());
+console.log(await cp.get_supply());
+console.log(await cp.get_name());

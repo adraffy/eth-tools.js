@@ -46,8 +46,8 @@ await view.find_provider(2);
 ```Javascript
 import {ens_normalize} from '@adraffy/ens-normalize.js'; // recommended
 
+// use a single provider for whatever chain it corresponds to
 // use ens_normalize() as the normalizer, string -> string
-// use a single provider for whatever chain 
 let ens = new ENS({provider, ens_normalize}); 
 
 // use a provider set, but operate on mainnet
@@ -56,28 +56,51 @@ let ens = new ENS({provider: providers.view(1), ens_normalize});
 
 // resolve a name or an address
 // throw before returning ENSName object
-await ens.resolve('bRAntly.eth', {throws: true});
-// returns ENSName object with .input_error property
+await ens.resolve('bRAntly.eth');
+// resolve name and return an ENSName or throw
 let name = await ens.resolve('bRAntly.eth');
-
+console.log(name.node); 
+// Uint256 (namehash)
+console.log(name.resolver); 
+// resolver contract address (or undefined)
+console.log(name.is_input_normalized());
+// false
+console.log(name.is_equivalent_name('BRANTLY.ETH'));
+// true
 console.log(await name.get_address());
 // "0x983110309620D911731Ac0932219af06091b6744"
 console.log(await name.get_primary());
 // "brantly.eth"
-console.log((await name.get_content()).hash);
+console.log(await name.is_owner_primary_name());
+// true
+console.log(await name.is_input_display());
+// false
+console.log(await name.get_content());
+// {hash: Uint8Array, url: ...}
 console.log(await name.get_text('com.twitter'));
-// {"com.twitter": "brantlymillegan"}
+// "brantlymillegan"
 console.log(await name.get_addr(['BTC', 'XCH']));
 // {"BTC": ..., "XCH": ...}
+console.log(await name.get_pubkey());
+// {x: Uint256, y: Uint256}
 console.log(await ens.is_dot_eth_available('brantly'));
 // false
-console.log((await ens.resolve('0x983110309620D911731Ac0932219af06091b6744')).name);
+console.log(await ens.get_dot_eth_owner('brantly'));
+// "0x983110309620D911731Ac0932219af06091b6744"
+console.log((await ens.primary_from_address('0x983110309620D911731Ac0932219af06091b6744'));
+console.log((await ens.owner('0x983110309620D911731Ac0932219af06091b6744').resolve()).name);
 // "brantly.eth"
 ```
+
+## NFT
+```Javascript
+let nft = new NFT(provider, '0xdc8bed466ee117ebff8ee84896d6acd42170d4bb');
+console.log(await nft.get_type()); // ERC-721
+console.log(await nft.get_token_uri(1)); // ifps://...
+```
+
 ## ABI
 ```Javascript
-import {ABIEncoder, ABIDecoder, Uint256} from '...';
-
 let enc = ABIEncoder.method('func(string,bytes32'); // or hashed signature
 enc.string('hello');
 enc.number(1234);
@@ -94,11 +117,9 @@ console.log(dec.uint256()); // read u256
 console.log(dec.addr());    // read 40-char hex-string (0x-prefixed w/checksum)
 ```
 
-## Utils
+## Address and Utils
 
 ```Javascript
-import {checksum_address, is_valid_address, is_checksum_address} from '...';
-
 let a = '0xb8c2c29ee19d8307cb7255e1cd9cbde883a267d5';
 let b = checksum_address(a);
 console.log(b); 

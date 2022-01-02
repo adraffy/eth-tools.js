@@ -115,6 +115,7 @@ export class ENSName {
 	readonly ens: ENS;
 	readonly input: string;
 	readonly name: string;
+	readonly labels: string[];
 	readonly node: Uint256;
 	readonly resolver: string;
 	readonly resolved: Date;

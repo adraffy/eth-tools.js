@@ -38,5 +38,16 @@ console.log(await name.get_texts());
 
 console.log(await ens.get_dot_eth_owner('raffy'));
 
+/*
+console.log([
+	'name()', 
+	'symbol()', 
+	'totalSupply()', 
+	'balanceOf(address)', 
+	'ownerOf(uint256)', 
+	'approve(address,uint256)', 
+	'safeTransferFrom(address,address,uint256)'
+].reduce((a, x) => a.xor(keccak().update(x).bytes), Uint256.zero()).hex.slice(0, 10));
+*/
 
 console.log(is_multihash('QmRwgn6qNPwzdDJfpPuSeq2Qjodi6z3n5QmdKk82fUJb1Y'));
