@@ -13,6 +13,11 @@ export function labelhash(label) {
 	return new Uint256(keccak().update(label).bytes);
 }
 
+// a.b => [a, b]
+export function labels_from_name(name) {
+	return name.split('.');
+}
+
 // expects a string
 // warning: this does not normalize
 // https://eips.ethereum.org/EIPS/eip-137#name-syntax
@@ -21,7 +26,7 @@ export function namehash(name) {
 	if (typeof name !== 'string') throw new TypeError('expected string');
 	let buf = new Uint8Array(64); 
 	if (name.length > 0) {
-		for (let label of name.split('.').reverse()) {
+		for (let label of labels_from_name(name).reverse()) {
 			buf.set(labelhash(label).bytes, 32);
 			buf.set(keccak().update(buf).bytes, 0);
 		}
@@ -80,12 +85,13 @@ export class ENS {
 		let p = this.provider;
 		return p.isProviderView ? p.get_provider() : p;
 	}
+	async call_registry(...args) {
+		return eth_call(await this.get_provider(), this.registry, ...args);
+	}
 	async get_resolver(node) {
-		return (await eth_call(
-			await this.get_provider(), 
-			this.registry, 
-			ABIEncoder.method('resolver(bytes32)').number(node)
-		)).addr();
+		return this.call_registry(ABIEncoder.method('resolver(bytes32)').number(node)).then(dec => {
+			return dec.addr();
+		});
 	}
 	async resolve(s) {
 		let name;
@@ -168,8 +174,6 @@ export class ENS {
 	}
 }
 
-
-
 export class ENSOwner {
 	constructor(ens, address) {
 		this.ens = ens;
@@ -218,7 +222,7 @@ export class ENSName {
 		this._addr = {};
 	}
 	get labels() {
-		return this.name.split('.');
+		return labels_from_name(this);
 	}
 	toJSON() {
 		return this.name;
@@ -228,6 +232,10 @@ export class ENSName {
 			throw new Error(`No resolver`);
 		}
 	}
+	async call_resolver(...args) {
+		this.assert_valid_resolver();
+		return eth_call(await this.ens.get_provider(), this.resolver, ...args);
+	}
 	async get_address() {
 		let temp = this._address;
 		if (typeof temp === 'string') return temp;
@@ -236,12 +244,11 @@ export class ENSName {
 				this.get_addr(60).catch(err => {
 					if (!err?.cause?.reverted) throw err;
 					// fallback to old api
-					return this.ens.get_provider().then(p => eth_call(p,
-						this.resolver, 
-						ABIEncoder.method('addr(bytes32)').number(this.node)
-					)).then(x => x.read_addr_bytes()); // read as bytes
+					return this.call_resolver(ABIEncoder.method('addr(bytes32)').number(this.node)).then(dec => {
+						return dec.read_addr_bytes(); // read as bytes
+					});
 				}).then(v => {
-					if (v.length == 0) throw new Error(`Address not set`);
+					if (v.length == 0) throw new Error(`ETH Address not set`);
 					if (v.length != 20) throw new Error(`Invalid ETH Address: expected 20 bytes`);
 					return standardize_address(hex_from_bytes(v));
 				}),
@@ -255,11 +262,9 @@ export class ENSName {
 		if (temp instanceof ENSOwner) return temp;
 		if (!temp) {
 			temp = this._owner = promise_queue(
-				eth_call(
-					await this.ens.get_provider(), 
-					this.ens.registry, 
-					ABIEncoder.method('owner(bytes32)').number(this.node)
-				).then(x => new ENSOwner(this.ens, x.addr())).catch(cause => {
+				this.ens.call_registry(ABIEncoder.method('owner(bytes32)').number(this.node)).then(dec => {
+					return new ENSOwner(this.ens, dec.addr());
+				}).catch(cause => {
 					throw new Error(`Read owner failed: ${cause.message}`, {cause});
 				}),
 				owner => this._owner = owner
@@ -309,6 +314,7 @@ export class ENSName {
 		}
 		return this.input === display && this.is_equivalent_name(display);
 	}
+	// this uses norm name if display name isn't set or invalid
 	async get_display_name() {
 		if (this._display) return this._display;
 		let display = await this.get_text('display');
@@ -332,11 +338,9 @@ export class ENSName {
 		if (!temp) {
 			this.assert_valid_resolver();
 			temp = this._text[key] = promise_queue(
-				eth_call(
-					await this.ens.get_provider(),
-					this.resolver, 
-					ABIEncoder.method('text(bytes32,string)').number(this.node).string(key)
-				).then(x => x.string()).catch(cause => {
+				this.call_resolver(ABIEncoder.method('text(bytes32,string)').number(this.node).string(key)).then(x => {
+					return x.string();
+				}).catch(cause => {
 					throw new Error(`Error reading text ${key}: ${cause.message}`, {cause});
 				}),
 				s => {
@@ -352,7 +356,7 @@ export class ENSName {
 	}
 	async get_texts(keys) {
 		if (keys === undefined) {
-			keys = Object.keys(this._text);
+			keys = Object.keys(this._text); // all known keys
 		} else if (!Array.isArray(keys)) {
 			throw new TypeError('expected array');
 		}
@@ -369,11 +373,9 @@ export class ENSName {
 		if (!temp) {
 			this.assert_valid_resolver();
 			temp = this._addr[type] = promise_queue(
-				eth_call(
-					await this.ens.get_provider(),
-					this.resolver, 
-					ABIEncoder.method('addr(bytes32,uint256)').number(this.node).number(type)
-				).then(x => x.memory()).catch(cause => {
+				this.call_resolver(ABIEncoder.method('addr(bytes32,uint256)').number(this.node).number(type)).then(dec => {
+					return dec.memory();
+				}).catch(cause => {
 					throw new Error(`Error reading addr ${format_addr_type(type, true)}: ${cause.message}`, {cause});
 				}),
 				v => {
@@ -390,7 +392,7 @@ export class ENSName {
 	async get_addrs(addrs, named = true) {
 		let types;
 		if (addrs === undefined) {
-			types = Object.keys(this._addr);
+			types = Object.keys(this._addr); // all known addrs
 		} else if (Array.isArray(addrs)) {
 			types = addrs.map(parse_addr_type); // throws
 		} else {
@@ -407,11 +409,7 @@ export class ENSName {
 		if (!temp) {
 			this.assert_valid_resolver();
 			temp = this._pubkey = promise_queue(
-				eth_call(
-					await this.ens.get_provider(),
-					this.resolver, 
-					ABIEncoder.method('pubkey(bytes32)').number(this.node)
-				).then(dec => {
+				this.call_resolver(ABIEncoder.method('pubkey(bytes32)').number(this.node)).then(dec => {
 					return {x: dec.uint256(), y: dec.uint256()};
 				}).catch(cause => {
 					throw new Error(`Error reading pubkey: ${cause.message}`, {cause});
@@ -429,11 +427,9 @@ export class ENSName {
 		if (!temp) {
 			this.assert_valid_resolver();
 			temp = this._content = promise_queue(
-				eth_call(
-					await this.ens.get_provider(),
-					this.resolver, 
-					ABIEncoder.method('contenthash(bytes32)').number(this.node)
-				).then(x => x.memory()).then(hash => {
+				this.call_resolver(ABIEncoder.method('contenthash(bytes32)').number(this.node)).then(dec => {
+					return dec.memory();
+				}).then(hash => {
 					let content = {};
 					if (hash.length > 0) {
 						content.hash = hash;
@@ -542,7 +538,6 @@ export async function parse_avatar(avatar, provider, address) {
 	}
 	return {type: 'unknown'};
 }
-
 
 export {ADDR_TYPES}; // mutable?
 
