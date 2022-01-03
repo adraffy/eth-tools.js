@@ -34,9 +34,10 @@ async function run() {
 				address: owner.address,
 				primary: await owner.get_primary_name()
 			},
+			avatar: await name.get_avatar(),
 			node: name.node.hex,
 			resolver: name.resolver,
-			text: await name.get_texts(['email', 'com.twitter', 'com.github']),
+			text: await name.get_texts(['name', 'display', 'avatar', 'email', 'com.twitter', 'com.github']),
 			addr: await name.get_addrs(['BTC', 'ETH']),
 			content: await name.get_content(),
 			pubkey: await name.get_pubkey(),

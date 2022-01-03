@@ -79,12 +79,14 @@ console.log(await name.get_texts());
 console.log(await ens.get_dot_eth_owner('raffy'));
 */
 
-let name = await ens.resolve('raffy.eth');
+let name = await ens.resolve('treysongz.eth');
 
-console.log(name.resolver);
+//console.log(name.resolver);
 
-console.log(await name.resolver.supports_text());
+//console.log(await name.resolver.supports_text());
 
+
+console.log(await name.get_avatar('avatar'));
 
 
 /*
