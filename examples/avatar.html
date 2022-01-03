@@ -427,6 +427,9 @@ async function resolve0(output, input) {
 	let pre = document.createElement('pre');
 	pre.innerHTML = JSON.stringify(resolved, null, 2);
 	switch (resolved.type) {
+		case 'invalid':
+			output.append(create_error(`<b>Invalid avatar format</b>: ${resolved.error}`), pre);
+			break;
 		case 'unknown': {
 			output.append(create_error('Unknown avatar format'), pre);
 			break;

@@ -482,6 +482,8 @@ export class ENSName {
 	}
 }
 
+const AVATAR_TYPE_INVALID = 'invalid';
+
 // https://medium.com/the-ethereum-name-service/step-by-step-guide-to-setting-an-nft-as-your-ens-profile-avatar-3562d39567fc
 // https://medium.com/the-ethereum-name-service/major-refresh-of-nft-images-metadata-for-ens-names-963090b21b23
 // https://github.com/ensdomains/ens-metadata-service
@@ -493,13 +495,13 @@ export async function parse_avatar(avatar, provider, address) {
 	let parts = avatar.split('/');
 	let part0 = parts[0];
 	if (part0.startsWith('eip155:')) { // nft format  
-		if (parts.length < 2) return {type: 'invalid', error: 'expected contract'};
-		if (parts.length < 3) return {type: 'invalid', error: 'expected token'};
+		if (parts.length < 2) return {type: AVATAR_TYPE_INVALID, error: 'expected contract'};
+		if (parts.length < 3) return {type: AVATAR_TYPE_INVALID, error: 'expected token'};
 		let chain_id;
 		try {
 			chain_id = standardize_chain_id(part0.slice(part0.indexOf(':') + 1));
 		} catch (err) {
-			return {type: 'invalid', error: err.message};
+			return {type: AVATAR_TYPE_INVALID, error: err.message};
 		}
 		let part1 = parts[1];
 		if (part1.startsWith('erc721:')) {
@@ -508,13 +510,13 @@ export async function parse_avatar(avatar, provider, address) {
 			try {
 				contract = standardize_address(contract);
 			} catch (err) {
-				return {type: 'invalid', error: `Invalid contract address: ${err.message}`};
+				return {type: AVATAR_TYPE_INVALID, error: `Invalid contract address: ${err.message}`};
 			}
 			let token;
 			try {
 				token = Uint256.from_str(parts[2]);
 			} catch (err) {
-				return {type: 'invalid', error: `Invalid token: ${err.message}`};
+				return {type: AVATAR_TYPE_INVALID, error: `Invalid token: ${err.message}`};
 			}
 			let ret = {type: 'nft', interface: 'erc721', contract, token, chain_id};
 			if (provider instanceof Providers) {
@@ -532,7 +534,7 @@ export async function parse_avatar(avatar, provider, address) {
 						ret.owned = address.toUpperCase() === owner.toUpperCase() ? 1 : 0; // is_same_address?
 					}
 				} catch (err) {
-					return {type: 'invalid', error: `invalid response from contract`};
+					return {type: AVATAR_TYPE_INVALID, error: `invalid response from contract`};
 				}
 			}
 			return ret;
@@ -542,13 +544,13 @@ export async function parse_avatar(avatar, provider, address) {
 			try {
 				contract = standardize_address(contract);
 			} catch (err) {
-				return {type: 'invalid', error: `Invalid contract address: ${err.message}`};
+				return {type: AVATAR_TYPE_INVALID, error: `Invalid contract address: ${err.message}`};
 			}
 			let token;
 			try {
 				token = Uint256.from_str(parts[2]);
 			} catch (err) {
-				return {type: 'invalid', error: `Invalid token: ${err.message}`};
+				return {type: AVATAR_TYPE_INVALID, error: `Invalid token: ${err.message}`};
 			}
 			let ret = {type: 'nft', interface: 'erc1155', contract, token, chain_id};
 			if (provider instanceof Providers) {
@@ -568,12 +570,12 @@ export async function parse_avatar(avatar, provider, address) {
 						ret.owned = balance;
 					}
 				} catch (err) {
-					return {type: 'invalid', error: `invalid response from contract`};
+					return {type: AVATAR_TYPE_INVALID, error: `invalid response from contract`};
 				}
 			}
 			return ret;
 		} else {
-			return {type: 'invalid', error: `unsupported contract interface: ${part1}`};
+			return {type: AVATAR_TYPE_INVALID, error: `unsupported contract interface: ${part1}`};
 		}		
 	}
 	return {type: 'unknown'};
