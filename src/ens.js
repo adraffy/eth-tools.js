@@ -1,10 +1,11 @@
 import {hex_from_bytes, keccak} from '@adraffy/keccak';
 import {ABIDecoder, ABIEncoder, Uint256} from './abi.js';
-import {eth_call} from './eth.js';
+import {eth_call, supports_interface} from './eth.js';
 import {is_null_hex, promise_queue} from './utils.js';
 import {standardize_address, is_valid_address} from './address.js';
 import {base58_from_bytes} from './base58.js';
 import {Providers} from './providers.js';
+import {standardize_chain_id} from './chains.js';
 import ADDR_TYPES from './ens-address-types.js';
 
 // accepts anything that keccak can digest
@@ -58,6 +59,7 @@ export class ENS {
 		this.registry = registry;
 		this.normalizer = undefined;
 		this._dot_eth_contract = undefined;
+		this._resolvers = {};
 	}
 	normalize(name) {
 		return this.ens_normalize?.(name) ?? name;
@@ -91,6 +93,13 @@ export class ENS {
 	async get_resolver(node) {
 		return this.call_registry(ABIEncoder.method('resolver(bytes32)').number(node)).then(dec => {
 			return dec.addr();
+		}).then(address => {
+			if (is_null_hex(address)) return; // no resolver
+			let resolver = this._resolvers[address];
+			if (!resolver) {
+				resolver = this._resolvers[address] = new ENSResolver(this, address);
+			}
+			return resolver;
 		});
 	}
 	async resolve(s) {
@@ -106,10 +115,7 @@ export class ENS {
 		let node = namehash(name);
 		let resolver;
 		try {
-			let address = await this.get_resolver(node);
-			if (!is_null_hex(address)) {
-				resolver = address;
-			}
+			resolver = await this.get_resolver(node);
 		} catch (cause) {
 			let err = new Error(`Unable to determine resolver: ${cause.message}`, {cause})
 			err.input = s;
@@ -131,11 +137,11 @@ export class ENS {
 		}
 		let rev_node = namehash(`${address.slice(2).toLowerCase()}.addr.reverse`); 
 		let rev_resolver = await this.get_resolver(rev_node);
-		if (is_null_hex(rev_resolver)) return null; // not set
+		if (!rev_resolver) return; // not set
 		try {
 			return (await eth_call(
 				await this.get_provider(), 
-				rev_resolver, 
+				rev_resolver.address, 
 				ABIEncoder.method('name(bytes32)').number(rev_node)
 			)).string(); // this can be empty string
 		} catch (cause) {
@@ -171,6 +177,30 @@ export class ENS {
 			if (err.reverted) return; // available?
 			throw err;
 		}
+	}
+}
+
+export class ENSResolver {
+	constructor(ens, address) {
+		this.ens = ens;
+		this.address = address;
+		//
+		this._text = undefined;
+	}
+	async supports_text() {
+		let temp = this._text;
+		if (typeof temp === 'boolean') return temp;
+		if (!temp) {
+			temp = this._text = promise_queue(
+				// bytes4 constant private TEXT_INTERFACE_ID = 0x59d1d43c;
+				supports_interface(await this.ens.get_provider(), this.address, '59d1d43c'),
+				b => this._text = b
+			);
+		}
+		return temp();
+	}
+	toJSON() {
+		return this.address;
 	}
 }
 
@@ -234,7 +264,7 @@ export class ENSName {
 	}
 	async call_resolver(...args) {
 		this.assert_valid_resolver();
-		return eth_call(await this.ens.get_provider(), this.resolver, ...args);
+		return eth_call(await this.ens.get_provider(), this.resolver.address, ...args);
 	}
 	async get_address() {
 		let temp = this._address;
@@ -465,19 +495,26 @@ export async function parse_avatar(avatar, provider, address) {
 	if (part0.startsWith('eip155:')) { // nft format  
 		if (parts.length < 2) return {type: 'invalid', error: 'expected contract'};
 		if (parts.length < 3) return {type: 'invalid', error: 'expected token'};
-		let chain_id = parseInt(part0.slice(part0.indexOf(':') + 1));
-		if (!(chain_id > 0)) return {type: 'invalid', error: 'expected chain id'};
+		let chain_id;
+		try {
+			chain_id = standardize_chain_id(part0.slice(part0.indexOf(':') + 1));
+		} catch (err) {
+			return {type: 'invalid', error: err.message};
+		}
 		let part1 = parts[1];
 		if (part1.startsWith('erc721:')) {
 			// https://eips.ethereum.org/EIPS/eip-721
 			let contract = part1.slice(part1.indexOf(':') + 1);
-			if (!is_valid_address(contract)) return {type: 'invalid', error: 'expected contract address'};
-			contract = standardize_address(contract);
+			try {
+				contract = standardize_address(contract);
+			} catch (err) {
+				return {type: 'invalid', error: `Invalid contract address: ${err.message}`};
+			}
 			let token;
 			try {
 				token = Uint256.from_str(parts[2]);
 			} catch (err) {
-				return {type: 'invalid', error: 'expected uint256 token'};
+				return {type: 'invalid', error: `Invalid token: ${err.message}`};
 			}
 			let ret = {type: 'nft', interface: 'erc721', contract, token, chain_id};
 			if (provider instanceof Providers) {
@@ -502,13 +539,16 @@ export async function parse_avatar(avatar, provider, address) {
 		} else if (part1.startsWith('erc1155:')) {
 			// https://eips.ethereum.org/EIPS/eip-1155
 			let contract = part1.slice(part1.indexOf(':') + 1);
-			if (!is_valid_address(contract)) return  {type: 'invalid', error: 'invalid contract address'};
-			contract = standardize_address(contract);
+			try {
+				contract = standardize_address(contract);
+			} catch (err) {
+				return {type: 'invalid', error: `Invalid contract address: ${err.message}`};
+			}
 			let token;
 			try {
 				token = Uint256.from_str(parts[2]);
 			} catch (err) {
-				return {type: 'invalid', error: 'expected uint256 token'};
+				return {type: 'invalid', error: `Invalid token: ${err.message}`};
 			}
 			let ret = {type: 'nft', interface: 'erc1155', contract, token, chain_id};
 			if (provider instanceof Providers) {

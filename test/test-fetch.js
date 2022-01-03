@@ -1,7 +1,8 @@
 import {FETCH as provider} from './nodejs-provider.js';
-import {chain_id_from_provider} from '../index.js';
 
-console.log(provider.source());
+console.log(provider.source);
+
+if (!provider.isSmartProvider) throw new Error('wtf');
 
 provider.on('connect', ({chainId}) => {
 	console.log(`connected: ${chainId}`);
@@ -10,11 +11,9 @@ provider.on('disconnect', err => {
 	console.log(`disconnected: ${err}`);
 });
 
-console.log(await chain_id_from_provider(provider));
+console.log(await provider.request({method: 'eth_chainId'}));
 
 console.log(await provider.request({method: 'web3_clientVersion'}));
-
-console.log(provider.isRetryProvider);
 
 provider.disconnect();
 

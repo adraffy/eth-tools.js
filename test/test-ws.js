@@ -1,7 +1,8 @@
 import {WS as provider} from './nodejs-provider.js';
-import {chain_id_from_provider} from '../index.js';
 
-console.log(provider.source());
+console.log(provider.source);
+
+if (!provider.isSmartProvider) throw new Error('wtf');
 
 provider.on('connect', ({chainId}) => {
 	console.log(`connected: ${chainId}`);
@@ -10,10 +11,10 @@ provider.on('disconnect', err => {
 	console.log(`disconnected: ${err}`);
 });
 
-console.log(await chain_id_from_provider(provider));
+console.log(await provider.request({method: 'eth_chainId'}));
 provider.disconnect();
 console.log(`Should be disconnected`);
-console.log(await chain_id_from_provider(provider));
+console.log(await provider.request({method: 'eth_chainId'}));
 console.log(`Should be reconnected`);
 
 await provider.request({method: 'eth_subscribe', params: ['newHeads']}).then(sub => new Promise((ful, rej) => {

@@ -6,7 +6,9 @@ export * from './src/base58.js';
 export * from './src/multihash.js';
 export * from './src/address.js';
 
+export * from './src/chains.js';
 export * from './src/providers.js';
+export * from './src/ExternalProvider.js';
 export * from './src/WebSocketProvider.js';
 export * from './src/FetchProvider.js';
 

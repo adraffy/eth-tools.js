@@ -1,6 +1,6 @@
 {
   "name": "@adraffy/eth-tools",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "Compact set of ES6 tools for Ethereum dapps that work in the browser",
   "keywords": [
     "ethereum",

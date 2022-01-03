@@ -1,6 +1,6 @@
 import {EventEmitter} from './EventEmitter.js';
 export class WebSocketProvider extends EventEmitter {
-	constructor({url, WebSocket: ws_api, request_timeout = 30000, idle_timeout = 60000}) {
+	constructor({url, WebSocket: ws_api, source, request_timeout = 30000, idle_timeout = 60000}) {
 		if (typeof url !== 'string') throw new TypeError('expected url');
 		if (!ws_api) ws_api = globalThis.WebSocket;
 		if (!ws_api) throw new Error('unknown WebSocket implementation');
@@ -16,9 +16,11 @@ export class WebSocketProvider extends EventEmitter {
 		this._subs = new Set();
 		this._id = undefined;
 		this._chain_id = undefined;
+		this._source = source;
 	}
-	source() {
-		return this.url;
+	get isSmartProvider() { return true; }
+	get source() {
+		return this._source ?? this.url;
 	}
 	// idle timeout is disabled while subscribed
 	get idle_timeout() { return this._idle_timeout; }
@@ -49,6 +51,7 @@ export class WebSocketProvider extends EventEmitter {
 			case 'eth_subscribe': return this._request(obj).then(ret => {
 				this._subs.add(ret);
 				clearTimeout(this._idle_timer);
+				// TODO add ping/pong
 				return ret;
 			});
 			case 'eth_unsubscribe': return this._request(obj).then(ret => {

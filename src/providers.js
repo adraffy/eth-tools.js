@@ -1,26 +1,9 @@
+import {find_chain, ensure_chain} from './chains.js';
+import {make_smart} from './ExternalProvider.js';
 
-// returns provider chain id
-export async function chain_id_from_provider(provider) {
-	return parseInt(await provider.request({method: 'eth_chainId'}));
-}
-
-// returns string regarding provider construction
-export async function source_from_provider(provider) {
-	let source = provider.source?.();
-	if (source) return source;
-	if (provider.isMetaMask) return 'MetaMask';
-	return 'Unknown';
-}
-
-function is_chain_id(x) {
-	return Number.isSafeInteger(x);
-}
-
-function parse_chain_id(x) {
-	if (typeof x === 'string') x = parseInt(x);
-	if (!is_chain_id(x)) throw new TypeError(`expected chain: ${x}`);
-	return x;
-}
+// https://eips.ethereum.org/EIPS/eip-1193
+// https://eips.ethereum.org/EIPS/eip-695 (eth_chainId)
+// https://eips.ethereum.org/EIPS/eip-1474 (errors)
 
 export class Providers {
 	/*
@@ -39,129 +22,75 @@ export class Providers {
 		return p;
 	}
 	*/
-	constructor({cooldown = 30000} = {}) {
+	constructor() {
 		this.queue = [];
-		this.cooldown = cooldown;
 	}
-	add_static(chain_id, provider) {
-		chain_id = parse_chain_id(chain_id);
+	/*
+	add_public(chain_like) {
+		let chain = find_chain(chain_like);
+		if (!chain) throw new Error(`Chain ${chain_like} is not defined`);
+		let v = chain?.data.public_rpcs;
+		if (!Array.isArray(v) || v.length == 0) throw new Error(`${chain} has no public RPCs`);
+		return this.add_static(chain, v[Math.random() * v.length|0]);
+	}*/
+	add_static(chain_like, provider) {
+		let chain = ensure_chain(chain_like);
+		provider = make_smart(provider);
 		if (!this.queue.some(x => x.provider === provider)) { // only add once
-			this.queue.push({chain_id, provider}); // low priority
+			this.queue.push({chain, provider}); // low priority
 		}
 		return this; // chainable
 	}
 	add_dynamic(provider) {
+		provider = make_smart(provider);
 		if (!this.queue.some(x => x.provider === provider)) { // only add once
-			let rec = {provider, chain_id: null}; // unknown
-			provider.on('connect', ({chainId}) => { 
-				rec.chain_id = parseInt(chainId);
-			});
-			provider.on('chainChanged', chainId => {
-				rec.chain_id = parseInt(chainId);
-			});
-			this.queue.unshift(rec); // high priority
+			this.queue.unshift({provider}); // high priority
 		}
 		return this; // chainable
 	}
-	known_chain_ids() {
-		return [... new Set(this.queue.filter(x => typeof x.chain_id === 'number'))]
+	available_providers() {
+		return this.queue.map(({chain, provider}) => {
+			if (chain == undefined) {
+				chain = find_chain(provider.chain_id);
+			}
+			if (chain) return [chain, provider];
+		}).filter(x => x);
 	}
 	disconnect() {
 		for (let {provider} of this.queue) {
 			provider.disconnect?.();
 		}
 	}
-	async find_provider(chain_id, required = false, dynamic = true) {
-		if (!is_chain_id(chain_id)) throw new TypeError(`expected chain_id integer: ${chain_id}`);
-		if (dynamic) {
-			await Promise.all(this.queue.filter(x => x.chain_id === null).map(async rec => {
-				try {
-					rec.chain_id = await chain_id_from_provider(rec.provider);
-				} catch (err) {
-					rec.chain_id = false;
-					rec.cooldown = setTimeout(() => {
-						rec.chainId = null;
-					}, this.cooldown);
+	async find_provider(chain_like, required) {
+		let chain = find_chain(chain_like, required);
+		if (chain) {
+			for (let {provider, chain: other} of this.queue) {
+				if (other === undefined) {
+					other = find_chain(await provider.request({method: 'eth_chainId'})); // this is fast
 				}
-			}));
+				if (chain === other) {
+					return provider;
+				}
+			}
 		}
-		let rec = this.queue.find(rec => rec.chain_id === chain_id);
-		if (!rec && required) throw new Error(`No provider for chain ${chain_id}`);
-		return rec?.provider;
+		if (required) {
+			throw new Error(`No provider for chain ${chain}`);
+		}
 	}
-	view(chain_id) {
-		chain_id = parse_chain_id(chain_id);
-		let get_provider = async (...a) => {
-			return this.find_provider(chain_id, ...a);
+	view(chain_like) {
+		let chain = ensure_chain(chain_like);
+		let get_provider = async required => {
+			return this.find_provider(chain, required);
 		};
 		return new Proxy(this, {
 			get: (target, prop) => {
 				switch (prop) {
 					case 'isProviderView': return true;
+					case 'chain': return chain;
 					case 'get_provider': return get_provider;
 					default: return target[prop];
 				}
 			}
 		});
 	}
-}
-
-// detect-provider is way too useless to require as a dependancy 
-// https://github.com/MetaMask/detect-provider/blob/main/src/index.ts
-export async function determine_window_provider({fix = true, timeout = 5000} = {}) {
-	return new Promise((ful, rej) => {
-		let timer, handler;
-		const EVENT = 'ethereum#initialized';
-		if (check()) return;
-		timer = setTimeout(() => {
-			globalThis?.removeEventListener(EVENT, handler);
-			check() || rej(new Error(`No window.ethereum`));
-		}, timeout|0);
-		handler = () => {
-			clearTimeout(timer);		
-			globalThis?.removeEventListener(EVENT, handler);
-			check() || rej(new Error('jebaited'));
-		};
-		globalThis?.addEventListener(EVENT, handler);
-		function check() {
-			let e = globalThis.ethereum;
-			if (e) {
-				ful(fix ? retry(e) : e);
-				return true;
-			}
-		}
-	});
-}
-
-// return true if the request() error is due to bug
-// this seems to be an geth bug (infura, cloudflare, metamask)
-// related to not knowing the chain id
-export function is_header_bug(err) {
-	return err.code === -32000 && err.message === 'header not found';
-}
-
-export function retry(provider, {retry = 2, delay = 1000} = {}) {
-	if (typeof retry !== 'number' || retry < 1) throw new TypeError('expected retry > 0');
-	if (typeof delay !== 'number' || delay < 0) throw new TypeError('expected delay >= 0');
-	if (!provider) return;
-	if (provider.isRetryProvider) return provider;
-	async function request(obj) {
-		while (true) {
-			try {
-				return await provider.request(obj);
-			} catch (err) {
-				if (!is_header_bug(err) || !(retry-- > 0)) throw err;
-				await new Promise(ful => setTimeout(ful, delay));
-			}
-		}
-	}
-	return new Proxy(provider, {
-		get: function(obj, prop) {		
-			switch (prop) {
-				case 'request': return request;
-				case 'isRetryProvider': return true;
-				default: return obj[prop];
-			}	
-		}
-	});
 }

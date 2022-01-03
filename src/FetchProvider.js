@@ -1,4 +1,4 @@
-import {is_header_bug} from './providers.js';
+import {retry_request} from './retry.js';
 import {EventEmitter} from './EventEmitter.js';
 export class FetchProvider extends EventEmitter {
 	constructor({url, fetch: fetch_api, source, request_timeout = 30000, idle_timeout = 60000}) {
@@ -18,15 +18,14 @@ export class FetchProvider extends EventEmitter {
 		this._idle_timer = undefined;
 		this._source = source;
 	}
-	source() {
-		return this._source ?? this.url;
-	}
-	get isRetryProvider() { return true; }
+	get isSmartProvider() { return true; }
+	get source() { return this._source ?? this.url; }
 	async request(obj) {
 		if (typeof obj !== 'object') throw new TypeError('expected object');
+		let request_fn = this._request_once.bind(this);
 		if (!this._idle_timer) {			
 			try {
-				this._chain_id = await this._retry({method: 'eth_chainId'});
+				this._chain_id = await retry_request(request_fn, {method: 'eth_chainId'});
 			} catch (err) {
 				this.emit('connect-error', err);
 				throw err;
@@ -40,7 +39,7 @@ export class FetchProvider extends EventEmitter {
 			case 'eth_unsubscribe': throw new Error(`${obj.method} not supported by FetchProvider`);
 		}
 		try {
-			let ret = await this._retry(obj);
+			let ret = await retry_request(request_fn, obj);
 			this._restart_idle();
 			return ret;
 		} catch (err) {
@@ -72,17 +71,7 @@ export class FetchProvider extends EventEmitter {
 			...a
 		});
 	}
-	async _retry(obj, retry = 3, delay = 500) {
-		while (true) {
-			try {
-				return await this._request(obj);
-			} catch (err) {
-				if (!is_header_bug(err) || !(retry-- > 0)) throw err;
-				await new Promise(ful => setTimeout(ful, delay));
-			}
-		}
-	}
-	async _request(obj) {
+	async _request_once(obj) {
 		let res;
 		if (this._request_timeout > 0) {
 			let aborter = new AbortController();

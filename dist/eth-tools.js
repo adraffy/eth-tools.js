@@ -426,6 +426,11 @@ function is_checksum_address(s) {
 	}
 }
 
+function short_address(s) {
+	s = standardize_address(s);
+	return s.slice(0, 6) + '..' + s.slice(-4);
+}
+
 function index_mask_from_bit(i) { 
 	let index = i < 0 ? ~i : 255 - i;
 	if (index < 0 || index >= 256) throw new TypeError(`invalid bit index: ${i}`);
@@ -914,28 +919,207 @@ function replace_ipfs_protocol(s) {
 	return s.replace(/^ipfs:\/\//i, 'https://ipfs.io/ipfs/');
 }
 
-// returns provider chain id
-async function chain_id_from_provider(provider) {
-	return parseInt(await provider.request({method: 'eth_chainId'}));
+function standardize_chain_id(x) {	
+	let id;
+	if (typeof x === 'string') {
+		id = parseInt(x);
+	} else if (typeof x === 'number') {
+		id = x;
+	}  
+	if (!Number.isSafeInteger(id)) {
+		throw new TypeError(`Invalid chain: ${x}`);
+	}
+	return `0x${id.toString(16)}`;
 }
 
-// returns string regarding provider construction
-async function source_from_provider(provider) {
-	let source = provider.source?.();
-	if (source) return source;
-	if (provider.isMetaMask) return 'MetaMask';
-	return 'Unknown';
+class Chain {
+	constructor(id) {
+		this._id = id;
+		this.data = undefined;
+	}
+	get id() {
+		return this._id;
+	}
+	get name() {
+		return this.data?.name ?? `Chain(${this.id})`;
+	}
+	explorer_address_uri(s) {
+		return this.data?.explore_address.replace('{}', s);
+	}
+	explorer_tx_uri(s) {
+		return this.data?.explore_tx.replace('{}', s);
+	}
+	toJSON() {
+		return this.id;
+	}
+	toString() {
+		return `Chain(${this.id})`;
+	}
 }
 
-function is_chain_id(x) {
-	return Number.isSafeInteger(x);
+const CHAIN_CACHE = {};
+
+function find_chain(chain_like, required = false) {
+	if (chain_like instanceof Chain) return chain_like;
+	let chain_id = standardize_chain_id(chain_like);
+	let chain = CHAIN_CACHE[chain_id];
+	if (!chain && required) throw new Error(`Unknown chain: ${chain_id}`);
+	return chain;
 }
 
-function parse_chain_id(x) {
-	if (typeof x === 'string') x = parseInt(x);
-	if (!is_chain_id(x)) throw new TypeError(`expected chain: ${x}`);
-	return x;
+function defined_chains() {
+	return Object.values(CHAIN_CACHE);
 }
+
+// always returns a chain
+function ensure_chain(chain_like) {
+	if (chain_like instanceof Chain) return chain_like;
+	let chain_id = standardize_chain_id(chain_like);
+	let chain = CHAIN_CACHE[chain_id];
+	if (!chain) {
+		chain = CHAIN_CACHE[chain_id] = new Chain(chain_id);
+	}
+	return chain;
+}
+
+function explore_uris(base) {
+	return {
+		explore_base: base,
+		explore_address: `${base}/address/{}`,
+		explore_tx: `${base}/tx/{}`,
+	};
+}
+
+// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-155.md
+
+ensure_chain(1).data = {
+	name: 'Mainnet', 
+	...explore_uris('https://etherscan.io'),
+	//public_rpcs: ['https://cloudflare-eth.com']
+};
+
+ensure_chain(3).data = {
+	name: 'Ropsten', 
+	...explore_uris('https://ropsten.etherscan.io'), 
+	testnet: true
+};
+
+ensure_chain(4).data = {
+	name: 'Rinkeby', 
+	...explore_uris('https://rinkeby.etherscan.io'), 
+	testnet: true
+};
+
+ensure_chain(5).data = {
+	name: 'Goerli', 
+	...explore_uris('https://goerli.etherscan.io'), 
+	testnet: true
+};
+
+ensure_chain(43).data = {
+	name: 'Kovan', 
+	...explore_uris('https://kovan.etherscan.io'), 
+	testnet: true
+};
+
+ensure_chain(137).data = {
+	name: 'Matic',
+	...explore_uris('https://polygonscan.com'),
+	//public_rpcs: ['https://rpc-mainnet.matic.network']
+};
+
+ensure_chain(43114).data = {
+	name: 'Avax C-chain',
+	...explore_uris('https://snowtrace.io'),
+	//public_rpcs: ['https://api.avax.network/ext/bc/C/rpc']
+};
+
+// return true if the request() error is due to bug
+// this seems to be an geth bug (infura, cloudflare, metamask)
+// related to not knowing the chain id
+function is_header_bug(err) {
+	return err.code === -32000 && err.message === 'header not found';
+}
+
+const RETRY_TIMES = 3;
+const RETRY_DELAY = 500;
+
+async function retry_request(request_fn, arg) {
+	let n = RETRY_TIMES;
+	while (true) {
+		try {
+			return await request_fn(arg);
+		} catch (err) {
+			if (!is_header_bug(err) || !(n-- > 0)) throw err;
+			await new Promise(ful => setTimeout(ful, RETRY_DELAY));
+		}
+	}
+}
+
+// detect-provider is way too useless to require as a dependancy 
+// https://github.com/MetaMask/detect-provider/blob/main/src/index.ts
+async function determine_window_provider({smart = true, timeout = 5000} = {}) {
+	return new Promise((ful, rej) => {
+		let timer, handler;
+		const EVENT = 'ethereum#initialized';
+		if (check()) return;
+		timer = setTimeout(() => {
+			globalThis?.removeEventListener(EVENT, handler);
+			check() || rej(new Error(`No window.ethereum`));
+		}, timeout|0);
+		handler = () => {
+			clearTimeout(timer);		
+			globalThis?.removeEventListener(EVENT, handler);
+			check() || rej(new Error('jebaited'));
+		};
+		globalThis?.addEventListener(EVENT, handler);
+		function check() {
+			let e = globalThis.ethereum;
+			if (e) {
+				ful(smart ? make_smart(e) : e);
+				return true;
+			}
+		}
+	});
+}
+
+function make_smart(provider) {
+	if (provider.isSmartProvider) return provider; // already smart!
+	if (typeof provider.request !== 'function') throw new TypeError(`expected provider`);
+	const source = provider.isMetaMask ? 'MetaMask' : 'Unknown Provider';
+	let chain_id;
+	provider.on('connect', ({chainId}) => { 
+		chain_id = chainId;
+	});
+	provider.on('chainChanged', chainId => {
+		chain_id = chainId; 
+	});
+	provider.on('disconnect', () => {
+		chain_id = undefined;
+	});
+	async function request(obj) {
+		if (obj.method === 'eth_chainId' && chain_id) {
+			return chain_id; // fast
+		}
+		return retry_request(provider.request.bind(provider), obj);
+	}
+	return new Proxy(provider, {
+		get: function(obj, prop) {		
+			switch (prop) {
+				case 'request': return request;
+				case 'chain_id': return chain_id;
+				case 'source': return source;
+				case 'isSmartProvider': return true;
+				case 'disconnect': return obj[prop] ?? (() => {});
+				default: return obj[prop];
+			}	
+		}
+	});
+}
+
+// https://eips.ethereum.org/EIPS/eip-1193
+// https://eips.ethereum.org/EIPS/eip-695 (eth_chainId)
+// https://eips.ethereum.org/EIPS/eip-1474 (errors)
 
 class Providers {
 	/*
@@ -954,131 +1138,77 @@ class Providers {
 		return p;
 	}
 	*/
-	constructor({cooldown = 30000} = {}) {
+	constructor() {
 		this.queue = [];
-		this.cooldown = cooldown;
 	}
-	add_static(chain_id, provider) {
-		chain_id = parse_chain_id(chain_id);
+	/*
+	add_public(chain_like) {
+		let chain = find_chain(chain_like);
+		if (!chain) throw new Error(`Chain ${chain_like} is not defined`);
+		let v = chain?.data.public_rpcs;
+		if (!Array.isArray(v) || v.length == 0) throw new Error(`${chain} has no public RPCs`);
+		return this.add_static(chain, v[Math.random() * v.length|0]);
+	}*/
+	add_static(chain_like, provider) {
+		let chain = ensure_chain(chain_like);
+		provider = make_smart(provider);
 		if (!this.queue.some(x => x.provider === provider)) { // only add once
-			this.queue.push({chain_id, provider}); // low priority
+			this.queue.push({chain, provider}); // low priority
 		}
 		return this; // chainable
 	}
 	add_dynamic(provider) {
+		provider = make_smart(provider);
 		if (!this.queue.some(x => x.provider === provider)) { // only add once
-			let rec = {provider, chain_id: null}; // unknown
-			provider.on('connect', ({chainId}) => { 
-				rec.chain_id = parseInt(chainId);
-			});
-			provider.on('chainChanged', chainId => {
-				rec.chain_id = parseInt(chainId);
-			});
-			this.queue.unshift(rec); // high priority
+			this.queue.unshift({provider}); // high priority
 		}
 		return this; // chainable
 	}
-	known_chain_ids() {
-		return [... new Set(this.queue.filter(x => typeof x.chain_id === 'number'))]
+	available_providers() {
+		return this.queue.map(({chain, provider}) => {
+			if (chain == undefined) {
+				chain = find_chain(provider.chain_id);
+			}
+			if (chain) return [chain, provider];
+		}).filter(x => x);
 	}
 	disconnect() {
 		for (let {provider} of this.queue) {
 			provider.disconnect?.();
 		}
 	}
-	async find_provider(chain_id, required = false, dynamic = true) {
-		if (!is_chain_id(chain_id)) throw new TypeError(`expected chain_id integer: ${chain_id}`);
-		if (dynamic) {
-			await Promise.all(this.queue.filter(x => x.chain_id === null).map(async rec => {
-				try {
-					rec.chain_id = await chain_id_from_provider(rec.provider);
-				} catch (err) {
-					rec.chain_id = false;
-					rec.cooldown = setTimeout(() => {
-						rec.chainId = null;
-					}, this.cooldown);
+	async find_provider(chain_like, required) {
+		let chain = find_chain(chain_like, required);
+		if (chain) {
+			for (let {provider, chain: other} of this.queue) {
+				if (other === undefined) {
+					other = find_chain(await provider.request({method: 'eth_chainId'})); // this is fast
 				}
-			}));
+				if (chain === other) {
+					return provider;
+				}
+			}
 		}
-		let rec = this.queue.find(rec => rec.chain_id === chain_id);
-		if (!rec && required) throw new Error(`No provider for chain ${chain_id}`);
-		return rec?.provider;
+		if (required) {
+			throw new Error(`No provider for chain ${chain}`);
+		}
 	}
-	view(chain_id) {
-		chain_id = parse_chain_id(chain_id);
-		let get_provider = async (...a) => {
-			return this.find_provider(chain_id, ...a);
+	view(chain_like) {
+		let chain = ensure_chain(chain_like);
+		let get_provider = async required => {
+			return this.find_provider(chain, required);
 		};
 		return new Proxy(this, {
 			get: (target, prop) => {
 				switch (prop) {
 					case 'isProviderView': return true;
+					case 'chain': return chain;
 					case 'get_provider': return get_provider;
 					default: return target[prop];
 				}
 			}
 		});
 	}
-}
-
-// detect-provider is way too useless to require as a dependancy 
-// https://github.com/MetaMask/detect-provider/blob/main/src/index.ts
-async function determine_window_provider({fix = true, timeout = 5000} = {}) {
-	return new Promise((ful, rej) => {
-		let timer, handler;
-		const EVENT = 'ethereum#initialized';
-		if (check()) return;
-		timer = setTimeout(() => {
-			globalThis?.removeEventListener(EVENT, handler);
-			check() || rej(new Error(`No window.ethereum`));
-		}, timeout|0);
-		handler = () => {
-			clearTimeout(timer);		
-			globalThis?.removeEventListener(EVENT, handler);
-			check() || rej(new Error('jebaited'));
-		};
-		globalThis?.addEventListener(EVENT, handler);
-		function check() {
-			let e = globalThis.ethereum;
-			if (e) {
-				ful(fix ? retry(e) : e);
-				return true;
-			}
-		}
-	});
-}
-
-// return true if the request() error is due to bug
-// this seems to be an geth bug (infura, cloudflare, metamask)
-// related to not knowing the chain id
-function is_header_bug(err) {
-	return err.code === -32000 && err.message === 'header not found';
-}
-
-function retry(provider, {retry = 2, delay = 1000} = {}) {
-	if (typeof retry !== 'number' || retry < 1) throw new TypeError('expected retry > 0');
-	if (typeof delay !== 'number' || delay < 0) throw new TypeError('expected delay >= 0');
-	if (!provider) return;
-	if (provider.isRetryProvider) return provider;
-	async function request(obj) {
-		while (true) {
-			try {
-				return await provider.request(obj);
-			} catch (err) {
-				if (!is_header_bug(err) || !(retry-- > 0)) throw err;
-				await new Promise(ful => setTimeout(ful, delay));
-			}
-		}
-	}
-	return new Proxy(provider, {
-		get: function(obj, prop) {		
-			switch (prop) {
-				case 'request': return request;
-				case 'isRetryProvider': return true;
-				default: return obj[prop];
-			}	
-		}
-	});
 }
 
 // https://eips.ethereum.org/EIPS/eip-1193
@@ -1132,7 +1262,7 @@ class EventEmitter {
 }
 
 class WebSocketProvider extends EventEmitter {
-	constructor({url, WebSocket: ws_api, request_timeout = 30000, idle_timeout = 60000}) {
+	constructor({url, WebSocket: ws_api, source, request_timeout = 30000, idle_timeout = 60000}) {
 		if (typeof url !== 'string') throw new TypeError('expected url');
 		if (!ws_api) ws_api = globalThis.WebSocket;
 		if (!ws_api) throw new Error('unknown WebSocket implementation');
@@ -1148,9 +1278,11 @@ class WebSocketProvider extends EventEmitter {
 		this._subs = new Set();
 		this._id = undefined;
 		this._chain_id = undefined;
+		this._source = source;
 	}
-	source() {
-		return this.url;
+	get isSmartProvider() { return true; }
+	get source() {
+		return this._source ?? this.url;
 	}
 	// idle timeout is disabled while subscribed
 	get idle_timeout() { return this._idle_timeout; }
@@ -1181,6 +1313,7 @@ class WebSocketProvider extends EventEmitter {
 			case 'eth_subscribe': return this._request(obj).then(ret => {
 				this._subs.add(ret);
 				clearTimeout(this._idle_timer);
+				// TODO add ping/pong
 				return ret;
 			});
 			case 'eth_unsubscribe': return this._request(obj).then(ret => {
@@ -1310,15 +1443,14 @@ class FetchProvider extends EventEmitter {
 		this._idle_timer = undefined;
 		this._source = source;
 	}
-	source() {
-		return this._source ?? this.url;
-	}
-	get isRetryProvider() { return true; }
+	get isSmartProvider() { return true; }
+	get source() { return this._source ?? this.url; }
 	async request(obj) {
 		if (typeof obj !== 'object') throw new TypeError('expected object');
+		let request_fn = this._request_once.bind(this);
 		if (!this._idle_timer) {			
 			try {
-				this._chain_id = await this._retry({method: 'eth_chainId'});
+				this._chain_id = await retry_request(request_fn, {method: 'eth_chainId'});
 			} catch (err) {
 				this.emit('connect-error', err);
 				throw err;
@@ -1332,7 +1464,7 @@ class FetchProvider extends EventEmitter {
 			case 'eth_unsubscribe': throw new Error(`${obj.method} not supported by FetchProvider`);
 		}
 		try {
-			let ret = await this._retry(obj);
+			let ret = await retry_request(request_fn, obj);
 			this._restart_idle();
 			return ret;
 		} catch (err) {
@@ -1364,17 +1496,7 @@ class FetchProvider extends EventEmitter {
 			...a
 		});
 	}
-	async _retry(obj, retry = 3, delay = 500) {
-		while (true) {
-			try {
-				return await this._request(obj);
-			} catch (err) {
-				if (!is_header_bug(err) || !(retry-- > 0)) throw err;
-				await new Promise(ful => setTimeout(ful, delay));
-			}
-		}
-	}
-	async _request(obj) {
+	async _request_once(obj) {
 		let res;
 		if (this._request_timeout > 0) {
 			let aborter = new AbortController();
@@ -1423,9 +1545,14 @@ async function eth_call(provider, tx, enc = null, tag = 'latest') {
 		throw err;
 	}
 }
-
+// https://eips.ethereum.org/EIPS/eip-165
 async function supports_interface(provider, contract, method) {
-	return (await eth_call(provider, contract, ABIEncoder.method('supportsInterface(bytes4)').bytes(bytes4_from_method(method)))).boolean();
+	return eth_call(provider, contract, ABIEncoder.method('supportsInterface(bytes4)').bytes(bytes4_from_method(method))).then(dec => {
+		return dec.boolean();
+	}).catch(err => {
+		if (err.code === -32000) return false; // TODO: implement proper fallback
+		throw err;
+	});
 }
 
 var ADDR_TYPES = {
@@ -2371,6 +2498,7 @@ class ENS {
 		this.registry = registry;
 		this.normalizer = undefined;
 		this._dot_eth_contract = undefined;
+		this._resolvers = {};
 	}
 	normalize(name) {
 		return this.ens_normalize?.(name) ?? name;
@@ -2404,6 +2532,13 @@ class ENS {
 	async get_resolver(node) {
 		return this.call_registry(ABIEncoder.method('resolver(bytes32)').number(node)).then(dec => {
 			return dec.addr();
+		}).then(address => {
+			if (is_null_hex(address)) return; // no resolver
+			let resolver = this._resolvers[address];
+			if (!resolver) {
+				resolver = this._resolvers[address] = new ENSResolver(this, address);
+			}
+			return resolver;
 		});
 	}
 	async resolve(s) {
@@ -2419,10 +2554,7 @@ class ENS {
 		let node = namehash(name);
 		let resolver;
 		try {
-			let address = await this.get_resolver(node);
-			if (!is_null_hex(address)) {
-				resolver = address;
-			}
+			resolver = await this.get_resolver(node);
 		} catch (cause) {
 			let err = new Error(`Unable to determine resolver: ${cause.message}`, {cause});
 			err.input = s;
@@ -2444,11 +2576,11 @@ class ENS {
 		}
 		let rev_node = namehash(`${address.slice(2).toLowerCase()}.addr.reverse`); 
 		let rev_resolver = await this.get_resolver(rev_node);
-		if (is_null_hex(rev_resolver)) return null; // not set
+		if (!rev_resolver) return; // not set
 		try {
 			return (await eth_call(
 				await this.get_provider(), 
-				rev_resolver, 
+				rev_resolver.address, 
 				ABIEncoder.method('name(bytes32)').number(rev_node)
 			)).string(); // this can be empty string
 		} catch (cause) {
@@ -2484,6 +2616,30 @@ class ENS {
 			if (err.reverted) return; // available?
 			throw err;
 		}
+	}
+}
+
+class ENSResolver {
+	constructor(ens, address) {
+		this.ens = ens;
+		this.address = address;
+		//
+		this._text = undefined;
+	}
+	async supports_text() {
+		let temp = this._text;
+		if (typeof temp === 'boolean') return temp;
+		if (!temp) {
+			temp = this._text = promise_queue(
+				// bytes4 constant private TEXT_INTERFACE_ID = 0x59d1d43c;
+				supports_interface(await this.ens.get_provider(), this.address, '59d1d43c'),
+				b => this._text = b
+			);
+		}
+		return temp();
+	}
+	toJSON() {
+		return this.address;
 	}
 }
 
@@ -2547,7 +2703,7 @@ class ENSName {
 	}
 	async call_resolver(...args) {
 		this.assert_valid_resolver();
-		return eth_call(await this.ens.get_provider(), this.resolver, ...args);
+		return eth_call(await this.ens.get_provider(), this.resolver.address, ...args);
 	}
 	async get_address() {
 		let temp = this._address;
@@ -2778,19 +2934,26 @@ async function parse_avatar(avatar, provider, address) {
 	if (part0.startsWith('eip155:')) { // nft format  
 		if (parts.length < 2) return {type: 'invalid', error: 'expected contract'};
 		if (parts.length < 3) return {type: 'invalid', error: 'expected token'};
-		let chain_id = parseInt(part0.slice(part0.indexOf(':') + 1));
-		if (!(chain_id > 0)) return {type: 'invalid', error: 'expected chain id'};
+		let chain_id;
+		try {
+			chain_id = standardize_chain_id(part0.slice(part0.indexOf(':') + 1));
+		} catch (err) {
+			return {type: 'invalid', error: err.message};
+		}
 		let part1 = parts[1];
 		if (part1.startsWith('erc721:')) {
 			// https://eips.ethereum.org/EIPS/eip-721
 			let contract = part1.slice(part1.indexOf(':') + 1);
-			if (!is_valid_address(contract)) return {type: 'invalid', error: 'expected contract address'};
-			contract = standardize_address(contract);
+			try {
+				contract = standardize_address(contract);
+			} catch (err) {
+				return {type: 'invalid', error: `Invalid contract address: ${err.message}`};
+			}
 			let token;
 			try {
 				token = Uint256.from_str(parts[2]);
 			} catch (err) {
-				return {type: 'invalid', error: 'expected uint256 token'};
+				return {type: 'invalid', error: `Invalid token: ${err.message}`};
 			}
 			let ret = {type: 'nft', interface: 'erc721', contract, token, chain_id};
 			if (provider instanceof Providers) {
@@ -2815,13 +2978,16 @@ async function parse_avatar(avatar, provider, address) {
 		} else if (part1.startsWith('erc1155:')) {
 			// https://eips.ethereum.org/EIPS/eip-1155
 			let contract = part1.slice(part1.indexOf(':') + 1);
-			if (!is_valid_address(contract)) return  {type: 'invalid', error: 'invalid contract address'};
-			contract = standardize_address(contract);
+			try {
+				contract = standardize_address(contract);
+			} catch (err) {
+				return {type: 'invalid', error: `Invalid contract address: ${err.message}`};
+			}
 			let token;
 			try {
 				token = Uint256.from_str(parts[2]);
 			} catch (err) {
-				return {type: 'invalid', error: 'expected uint256 token'};
+				return {type: 'invalid', error: `Invalid token: ${err.message}`};
 			}
 			let ret = {type: 'nft', interface: 'erc1155', contract, token, chain_id};
 			if (provider instanceof Providers) {
@@ -3037,4 +3203,4 @@ class NFT {
 	*/
 }
 
-export { ABIDecoder, ABIEncoder, ADDR_TYPES, ENS, ENSName, ENSOwner, FetchProvider, NFT, Providers, Uint256, WebSocketProvider, base58_from_bytes, bytes4_from_method, bytes_from_base58, bytes_from_hex, bytes_from_utf8, chain_id_from_provider, compare_arrays, data_uri_from_json, determine_window_provider, eth_call, fix_multihash_uri, format_addr_type, hex_from_bytes, is_checksum_address, is_header_bug, is_multihash, is_null_hex, is_valid_address, keccak, labelhash, labels_from_name, left_truncate_bytes, namehash, parse_addr_type, parse_avatar, promise_queue, replace_ipfs_protocol, retry, set_bytes_to_number, sha3, shake, source_from_provider, standardize_address, supports_interface, unsigned_from_bytes, utf8_from_bytes };
+export { ABIDecoder, ABIEncoder, ADDR_TYPES, Chain, ENS, ENSName, ENSOwner, ENSResolver, FetchProvider, NFT, Providers, Uint256, WebSocketProvider, base58_from_bytes, bytes4_from_method, bytes_from_base58, bytes_from_hex, bytes_from_utf8, compare_arrays, data_uri_from_json, defined_chains, determine_window_provider, ensure_chain, eth_call, find_chain, fix_multihash_uri, format_addr_type, hex_from_bytes, is_checksum_address, is_multihash, is_null_hex, is_valid_address, keccak, labelhash, labels_from_name, left_truncate_bytes, make_smart, namehash, parse_addr_type, parse_avatar, promise_queue, replace_ipfs_protocol, set_bytes_to_number, sha3, shake, short_address, standardize_address, standardize_chain_id, supports_interface, unsigned_from_bytes, utf8_from_bytes };

@@ -21,3 +21,5 @@ import {providers} from './nodejs-provider.js';
 
 console.log(await (await providers.find_provider(1)).request({method: 'web3_clientVersion'}));
 console.log(await (await providers.find_provider(137)).request({method: 'web3_clientVersion'}));
+
+console.log(providers.view(1).chain);

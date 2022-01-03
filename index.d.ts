@@ -93,6 +93,7 @@ export class WebSocketProvider extends ProvideLike<WebSocketProvider> {
 }
 
 export class Providers {
+	add_public(chain_id: number): Providers;
 	add_static(chain_id: number, provider: Provider): Providers;
 	add_dynamic(provider: Provider): Providers;
 	find_provider(chain_id: number, required?: boolean, dynamic?: boolean): Promise<Provider>;
@@ -102,6 +103,12 @@ export class Providers {
 
 export class ProviderView extends Providers {
 	get_provider(): Promise<Provider>;
+}
+
+export class ENSResolver {
+	readonly ens: ENS;
+	readonly address: string;
+	supports_text(): Promise<boolean>;
 }
 
 export class ENSOwner {
@@ -117,7 +124,7 @@ export class ENSName {
 	readonly name: string;
 	readonly labels: string[];
 	readonly node: Uint256;
-	readonly resolver: string;
+	readonly resolver: ENSResolver;
 	readonly resolved: Date;
 	assert_valid_resolver(): void;
 	get_address(): Promise<string>;
@@ -151,7 +158,7 @@ export class ENS {
 	labelhash(label: string|Uint256): Uint256;
 	owner(address: string): ENSOwner;
 	resolve(name: string): Promise<ENSName>;
-	get_resolver(node: Uint256): Promise<string>;
+	get_resolver(node: Uint256): Promise<ENSResolver>;
 	primary_from_address(address: string): Promise<string>;
 	is_dot_eth_available(label: string): Promise<boolean>;
 	get_dot_eth_owner(label: string): Promise<ENSOwner>;

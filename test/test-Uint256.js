@@ -3,6 +3,7 @@ import {random_bytes, random_safe_unsigned, random_safe_integer} from './utils.j
 
 const N = 100000;
 
+console.log(Uint256.from_number(0).min_hex);
 console.log(Uint256.from_number(255).digits(2));
 console.log(Uint256.from_number(343).digits(7));
 

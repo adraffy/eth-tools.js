@@ -121,7 +121,7 @@ console.log(dec.addr());    // read 40-char hex-string (0x-prefixed w/checksum)
 
 ```Javascript
 let a = '0xb8c2c29ee19d8307cb7255e1cd9cbde883a267d5';
-let b = checksum_address(a);
+let b = standardize_address(a);
 console.log(b); 
 // "0xb8c2C29ee19D8307cb7255e1Cd9CbDE883A267d5"
 console.log(a.toLowerCase() === b.toLowerCase());
@@ -130,5 +130,4 @@ console.log([is_valid_address(a), is_valid_address(b)]);
 // [true, true]
 console.log([is_checksum_address(a), is_checksum_address(b)]);
 // [false, true]
-
 ```

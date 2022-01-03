@@ -51,9 +51,14 @@ console.log(await nfs.get_token_uri(1));
 import {ENS, keccak, is_multihash, Uint256} from '../index.js';
 import {WS as provider} from './nodejs-provider.js';
 
-console.log(Uint256.from_number(0).min_hex);
+
 
 let ens = new ENS({provider});
+
+/*
+
+
+
 
 console.log(await ens.resolve('name').then(x => x.get_text('com.twitter')))
 
@@ -72,6 +77,14 @@ console.log(await name.get_texts(['com.twitter']));
 console.log(await name.get_texts());
 
 console.log(await ens.get_dot_eth_owner('raffy'));
+*/
+
+let name = await ens.resolve('raffy.eth');
+
+console.log(name.resolver);
+
+console.log(await name.resolver.supports_text());
+
 
 
 /*

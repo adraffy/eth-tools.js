@@ -19,7 +19,12 @@ export async function eth_call(provider, tx, enc = null, tag = 'latest') {
 		throw err;
 	}
 }
-
+// https://eips.ethereum.org/EIPS/eip-165
 export async function supports_interface(provider, contract, method) {
-	return (await eth_call(provider, contract, ABIEncoder.method('supportsInterface(bytes4)').bytes(bytes4_from_method(method)))).boolean();
+	return eth_call(provider, contract, ABIEncoder.method('supportsInterface(bytes4)').bytes(bytes4_from_method(method))).then(dec => {
+		return dec.boolean();
+	}).catch(err => {
+		if (err.code === -32000) return false; // TODO: implement proper fallback
+		throw err;
+	});
 }
