@@ -7,14 +7,22 @@ export function compare_arrays(a, b) {
 
 // returns promises mirror the initial promise
 // callback is fired once with (value, err)
+
 export function promise_queue(promise, callback) {
 	let queue = [];	
 	promise.then(ret => {
-		callback?.(ret);
-		for (let x of queue) x.ful(ret);
+		for (let x of queue) x.ful(ret); 
+		let cb = callback;
+		if (cb) {
+			callback = queue; // mark used
+			cb(ret); // could throw
+		}
 	}).catch(err => {
-		callback?.(null, err);
+		if (callback === queue) throw err; // success callback threw
 		for (let x of queue) x.rej(err);
+		callback?.(null, err); // could throw
+	}).catch(err => {		
+		console.error('Uncaught callback exception: ', err);
 	});
 	return () => new Promise((ful, rej) => {
 		queue.push({ful, rej});

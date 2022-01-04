@@ -377,14 +377,22 @@ function compare_arrays(a, b) {
 
 // returns promises mirror the initial promise
 // callback is fired once with (value, err)
+
 function promise_queue(promise, callback) {
 	let queue = [];	
 	promise.then(ret => {
-		callback?.(ret);
-		for (let x of queue) x.ful(ret);
+		for (let x of queue) x.ful(ret); 
+		let cb = callback;
+		if (cb) {
+			callback = queue; // mark used
+			cb(ret); // could throw
+		}
 	}).catch(err => {
-		callback?.(null, err);
+		if (callback === queue) throw err; // success callback threw
 		for (let x of queue) x.rej(err);
+		callback?.(null, err); // could throw
+	}).catch(err => {		
+		console.error('Uncaught callback exception: ', err);
 	});
 	return () => new Promise((ful, rej) => {
 		queue.push({ful, rej});
@@ -399,19 +407,26 @@ function is_null_hex(s) {
 	return /^(0x)?[0]+$/i.test(s); // should this be 0+?
 }
 
+const NULL_ADDRESS = '0x0000000000000000000000000000000000000000';
+
 // accepts address as string (0x-prefix is optional) 
 // returns 0x-prefixed checksummed address 
 // https://github.com/ethereum/EIPs/blob/master/EIPS/eip-55.md
 function standardize_address(s, checksum = true) {
 	if (typeof s !== 'string') throw new TypeError('expected string');
 	if (s.startsWith('0x')) s = s.slice(2);
-	s = s.toLowerCase();
-	if (!/^[a-f0-9]{40}$/.test(s)) throw new TypeError('expected 40-char hex');
-	if (checksum) {
-		let hash = keccak().update(s).hex;
-		s = [...s].map((x, i) => hash.charCodeAt(i) >= 56 ? x.toUpperCase() : x).join('');
+	let lower = s.toLowerCase();
+	if (!/^[a-f0-9]{40}$/.test(lower)) throw new TypeError('expected 40-char hex');
+	let ret = lower;
+	if (checksum && !/^[0-9]+$/.test(ret)) { 
+		let upper = s.toUpperCase();
+		let hash = keccak().update(lower).hex;
+		ret = [...lower].map((x, i) => hash.charCodeAt(i) >= 56 ? x.toUpperCase() : x).join('');
+		if (s !== ret && s !== lower && s !== upper) {
+			throw new Error(`checksum failed: ${s}`);
+		}
 	}
-	return `0x${s}`;
+	return `0x${ret}`;
 }
 
 function is_valid_address(s) {
@@ -702,21 +717,23 @@ class ABIDecoder {
 
 const METHOD_CACHE = {};
 
+function hex_from_method(x) {
+	return /^0x[0-9a-fA-F]{8}$/.test(x) ? x : hex_from_bytes(bytes4_from_method(x));
+}
 function bytes4_from_method(x) {
-	if (x.includes('(')) {
+	if (typeof x === 'string' && x.includes('(')) {
 		let v = METHOD_CACHE[x];
 		if (!v) {
 			METHOD_CACHE[x] = v = keccak().update(x).bytes.subarray(0, 4);
 		}
 		return v.slice();
-	} else {
-		try {
-			let v = x instanceof Uint8Array ? x : bytes_from_hex(x);
-			if (v.length != 4) throw new Error('expected 4 bytes');
-			return v;
-		} catch (err) {
-			throw new Error(`method ${x} should be a signature or 8-char hex`);
-		}
+	}
+	try {
+		let v = x instanceof Uint8Array ? x : bytes_from_hex(x);
+		if (v.length != 4) throw new Error('expected 4 bytes');
+		return v;
+	} catch (err) {
+		throw new Error(`method ${x} should be a signature or 8-char hex`);
 	}
 }
 
@@ -1058,7 +1075,7 @@ async function retry_request(request_fn, arg) {
 
 // detect-provider is way too useless to require as a dependancy 
 // https://github.com/MetaMask/detect-provider/blob/main/src/index.ts
-async function determine_window_provider({smart = true, timeout = 5000} = {}) {
+async function determine_window_provider({smart = true, timeout = 3000} = {}) {
 	return new Promise((ful, rej) => {
 		let timer, handler;
 		const EVENT = 'ethereum#initialized';
@@ -2624,16 +2641,16 @@ class ENSResolver {
 		this.ens = ens;
 		this.address = address;
 		//
-		this._text = undefined;
+		this._interfaces = {};
 	}
-	async supports_text() {
-		let temp = this._text;
+	async supports_interface(method) {
+		let key = hex_from_method(method);
+		let temp = this._interfaces[key];
 		if (typeof temp === 'boolean') return temp;
 		if (!temp) {
-			temp = this._text = promise_queue(
-				// bytes4 constant private TEXT_INTERFACE_ID = 0x59d1d43c;
-				supports_interface(await this.ens.get_provider(), this.address, '59d1d43c'),
-				b => this._text = b
+			temp = this._interfaces = promise_queue(
+				supports_interface(await this.ens.get_provider(), this.address, method),
+				b => this._interfaces[key] = b
 			);
 		}
 		return temp();
@@ -2709,20 +2726,25 @@ class ENSName {
 		let temp = this._address;
 		if (typeof temp === 'string') return temp;
 		if (!temp) {
-			temp = this._address = promise_queue(
-				this.get_addr(60).catch(err => {
-					if (!err?.cause?.reverted) throw err;
-					// fallback to old api
-					return this.call_resolver(ABIEncoder.method('addr(bytes32)').number(this.node)).then(dec => {
-						return dec.read_addr_bytes(); // read as bytes
-					});
-				}).then(v => {
-					if (v.length == 0) throw new Error(`ETH Address not set`);
-					if (v.length != 20) throw new Error(`Invalid ETH Address: expected 20 bytes`);
-					return standardize_address(hex_from_bytes(v));
-				}),
-				address => this._address = address
-			);
+			this.assert_valid_resolver();
+			// https://eips.ethereum.org/EIPS/eip-2304	
+			const METHOD = 'addr(bytes32,uint256)';
+			const METHOD_OLD = 'addr(bytes32)';
+			let p;
+			if (await this.resolver.supports_interface(METHOD)) {
+				p = this.get_addr(60);
+			} else if (await this.resolver.supports_interface(METHOD_OLD)) {
+				p = this.call_resolver(ABIEncoder.method(METHOD_OLD).number(this.node)).then(dec => {
+					return dec.read_addr_bytes(); 
+				});
+			} else {
+				throw new Error(`Resolver does not support addr`);
+			}
+			temp = this._address = promise_queue(p.then(v => {
+				if (v.length == 0) return NULL_ADDRESS;
+				if (v.length != 20) throw new Error(`Invalid ETH Address: expected 20 bytes`);
+				return standardize_address(hex_from_bytes(v));
+			}), s => this._address = s);
 		}
 		return temp();
 	}
@@ -2799,15 +2821,19 @@ class ENSName {
 	}
 	// https://eips.ethereum.org/EIPS/eip-634
 	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/TextResolver.sol
-	//async get_text
 	async get_text(key) { 
 		if (typeof key !== 'string') throw new TypeError(`expected string`);
 		let temp = this._text[key];
 		if (typeof temp === 'string') return temp;
 		if (!temp) {
 			this.assert_valid_resolver();
+			// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-634.md
+			const METHOD = 'text(bytes32,string)';
+			if (!await this.resolver.supports_interface(METHOD)) {
+				throw new Error(`Resolver does not support text`);
+			}
 			temp = this._text[key] = promise_queue(
-				this.call_resolver(ABIEncoder.method('text(bytes32,string)').number(this.node).string(key)).then(x => {
+				this.call_resolver(ABIEncoder.method(METHOD).number(this.node).string(key)).then(x => {
 					return x.string();
 				}).catch(cause => {
 					throw new Error(`Error reading text ${key}: ${cause.message}`, {cause});
@@ -2841,8 +2867,12 @@ class ENSName {
 		if (temp instanceof Uint8Array) return temp;
 		if (!temp) {
 			this.assert_valid_resolver();
+			const METHOD = 'addr(bytes32,uint256)';
+			if (!await this.resolver.supports_interface(METHOD)) {
+				throw new Error(`Resolver does not support text`);
+			}
 			temp = this._addr[type] = promise_queue(
-				this.call_resolver(ABIEncoder.method('addr(bytes32,uint256)').number(this.node).number(type)).then(dec => {
+				this.call_resolver(ABIEncoder.method(METHOD).number(this.node).number(type)).then(dec => {
 					return dec.memory();
 				}).catch(cause => {
 					throw new Error(`Error reading addr ${format_addr_type(type, true)}: ${cause.message}`, {cause});
@@ -2902,12 +2932,18 @@ class ENSName {
 					let content = {};
 					if (hash.length > 0) {
 						content.hash = hash;
-						// https://github.com/multiformats/multicodec
-						let dec = new ABIDecoder(hash);
-						if (dec.uvarint() == 0xE3) { // ipfs
-							if (dec.read_byte() == 0x01 && dec.read_byte() == 0x70) { // check version and content-type
+						try {
+							// https://github.com/multiformats/multicodec
+							let dec = new ABIDecoder(hash);
+							let protocol = dec.uvarint();
+							let cid_version = dec.uvarint();
+							let content_type = dec.uvarint();
+							// TODO: this needs fixed
+							// either remove or use CID dependancy
+							if (protocol == 0xE3 && cid_version == 0x1 && content_type == 0x70) {
 								content.url = `ipfs://${base58_from_bytes(dec.read_bytes(dec.remaining))}`;
 							}
+						} catch (ignored) {							
 						}
 					}
 					return content;
@@ -2921,6 +2957,8 @@ class ENSName {
 	}
 }
 
+const AVATAR_TYPE_INVALID = 'invalid';
+
 // https://medium.com/the-ethereum-name-service/step-by-step-guide-to-setting-an-nft-as-your-ens-profile-avatar-3562d39567fc
 // https://medium.com/the-ethereum-name-service/major-refresh-of-nft-images-metadata-for-ens-names-963090b21b23
 // https://github.com/ensdomains/ens-metadata-service
@@ -2932,13 +2970,13 @@ async function parse_avatar(avatar, provider, address) {
 	let parts = avatar.split('/');
 	let part0 = parts[0];
 	if (part0.startsWith('eip155:')) { // nft format  
-		if (parts.length < 2) return {type: 'invalid', error: 'expected contract'};
-		if (parts.length < 3) return {type: 'invalid', error: 'expected token'};
+		if (parts.length < 2) return {type: AVATAR_TYPE_INVALID, error: 'expected contract'};
+		if (parts.length < 3) return {type: AVATAR_TYPE_INVALID, error: 'expected token'};
 		let chain_id;
 		try {
 			chain_id = standardize_chain_id(part0.slice(part0.indexOf(':') + 1));
 		} catch (err) {
-			return {type: 'invalid', error: err.message};
+			return {type: AVATAR_TYPE_INVALID, error: err.message};
 		}
 		let part1 = parts[1];
 		if (part1.startsWith('erc721:')) {
@@ -2947,13 +2985,13 @@ async function parse_avatar(avatar, provider, address) {
 			try {
 				contract = standardize_address(contract);
 			} catch (err) {
-				return {type: 'invalid', error: `Invalid contract address: ${err.message}`};
+				return {type: AVATAR_TYPE_INVALID, error: `Invalid contract address: ${err.message}`};
 			}
 			let token;
 			try {
 				token = Uint256.from_str(parts[2]);
 			} catch (err) {
-				return {type: 'invalid', error: `Invalid token: ${err.message}`};
+				return {type: AVATAR_TYPE_INVALID, error: `Invalid token: ${err.message}`};
 			}
 			let ret = {type: 'nft', interface: 'erc721', contract, token, chain_id};
 			if (provider instanceof Providers) {
@@ -2971,7 +3009,7 @@ async function parse_avatar(avatar, provider, address) {
 						ret.owned = address.toUpperCase() === owner.toUpperCase() ? 1 : 0; // is_same_address?
 					}
 				} catch (err) {
-					return {type: 'invalid', error: `invalid response from contract`};
+					return {type: AVATAR_TYPE_INVALID, error: `invalid response from contract`};
 				}
 			}
 			return ret;
@@ -2981,13 +3019,13 @@ async function parse_avatar(avatar, provider, address) {
 			try {
 				contract = standardize_address(contract);
 			} catch (err) {
-				return {type: 'invalid', error: `Invalid contract address: ${err.message}`};
+				return {type: AVATAR_TYPE_INVALID, error: `Invalid contract address: ${err.message}`};
 			}
 			let token;
 			try {
 				token = Uint256.from_str(parts[2]);
 			} catch (err) {
-				return {type: 'invalid', error: `Invalid token: ${err.message}`};
+				return {type: AVATAR_TYPE_INVALID, error: `Invalid token: ${err.message}`};
 			}
 			let ret = {type: 'nft', interface: 'erc1155', contract, token, chain_id};
 			if (provider instanceof Providers) {
@@ -3007,12 +3045,12 @@ async function parse_avatar(avatar, provider, address) {
 						ret.owned = balance;
 					}
 				} catch (err) {
-					return {type: 'invalid', error: `invalid response from contract`};
+					return {type: AVATAR_TYPE_INVALID, error: `invalid response from contract`};
 				}
 			}
 			return ret;
 		} else {
-			return {type: 'invalid', error: `unsupported contract interface: ${part1}`};
+			return {type: AVATAR_TYPE_INVALID, error: `unsupported contract interface: ${part1}`};
 		}		
 	}
 	return {type: 'unknown'};
@@ -3203,4 +3241,4 @@ class NFT {
 	*/
 }
 
-export { ABIDecoder, ABIEncoder, ADDR_TYPES, Chain, ENS, ENSName, ENSOwner, ENSResolver, FetchProvider, NFT, Providers, Uint256, WebSocketProvider, base58_from_bytes, bytes4_from_method, bytes_from_base58, bytes_from_hex, bytes_from_utf8, compare_arrays, data_uri_from_json, defined_chains, determine_window_provider, ensure_chain, eth_call, find_chain, fix_multihash_uri, format_addr_type, hex_from_bytes, is_checksum_address, is_multihash, is_null_hex, is_valid_address, keccak, labelhash, labels_from_name, left_truncate_bytes, make_smart, namehash, parse_addr_type, parse_avatar, promise_queue, replace_ipfs_protocol, set_bytes_to_number, sha3, shake, short_address, standardize_address, standardize_chain_id, supports_interface, unsigned_from_bytes, utf8_from_bytes };
+export { ABIDecoder, ABIEncoder, ADDR_TYPES, Chain, ENS, ENSName, ENSOwner, ENSResolver, FetchProvider, NFT, NULL_ADDRESS, Providers, Uint256, WebSocketProvider, base58_from_bytes, bytes4_from_method, bytes_from_base58, bytes_from_hex, bytes_from_utf8, compare_arrays, data_uri_from_json, defined_chains, determine_window_provider, ensure_chain, eth_call, find_chain, fix_multihash_uri, format_addr_type, hex_from_bytes, hex_from_method, is_checksum_address, is_multihash, is_null_hex, is_valid_address, keccak, labelhash, labels_from_name, left_truncate_bytes, make_smart, namehash, parse_addr_type, parse_avatar, promise_queue, replace_ipfs_protocol, set_bytes_to_number, sha3, shake, short_address, standardize_address, standardize_chain_id, supports_interface, unsigned_from_bytes, utf8_from_bytes };

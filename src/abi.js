@@ -273,21 +273,23 @@ export class ABIDecoder {
 
 const METHOD_CACHE = {};
 
+export function hex_from_method(x) {
+	return /^0x[0-9a-fA-F]{8}$/.test(x) ? x : hex_from_bytes(bytes4_from_method(x));
+}
 export function bytes4_from_method(x) {
-	if (x.includes('(')) {
+	if (typeof x === 'string' && x.includes('(')) {
 		let v = METHOD_CACHE[x];
 		if (!v) {
 			METHOD_CACHE[x] = v = keccak().update(x).bytes.subarray(0, 4);
 		}
 		return v.slice();
-	} else {
-		try {
-			let v = x instanceof Uint8Array ? x : bytes_from_hex(x);
-			if (v.length != 4) throw new Error('expected 4 bytes');
-			return v;
-		} catch (err) {
-			throw new Error(`method ${x} should be a signature or 8-char hex`);
-		}
+	}
+	try {
+		let v = x instanceof Uint8Array ? x : bytes_from_hex(x);
+		if (v.length != 4) throw new Error('expected 4 bytes');
+		return v;
+	} catch (err) {
+		throw new Error(`method ${x} should be a signature or 8-char hex`);
 	}
 }
 

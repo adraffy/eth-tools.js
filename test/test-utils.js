@@ -59,4 +59,6 @@ try {
 }
 if (!threw) throw new Error(`didn't throw`);
 
+await promise_queue(Promise.resolve(true), () => { throw new Error('wtf'); });
+
 console.log(await fetch(data_uri_from_json({a: 1})).then(x => x.json()));

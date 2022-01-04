@@ -1,8 +1,8 @@
 import {hex_from_bytes, keccak} from '@adraffy/keccak';
-import {ABIDecoder, ABIEncoder, Uint256} from './abi.js';
+import {ABIDecoder, ABIEncoder, Uint256, hex_from_method} from './abi.js';
 import {eth_call, supports_interface} from './eth.js';
 import {is_null_hex, promise_queue} from './utils.js';
-import {standardize_address, is_valid_address} from './address.js';
+import {standardize_address, is_valid_address, NULL_ADDRESS} from './address.js';
 import {base58_from_bytes} from './base58.js';
 import {Providers} from './providers.js';
 import {standardize_chain_id} from './chains.js';
@@ -185,16 +185,16 @@ export class ENSResolver {
 		this.ens = ens;
 		this.address = address;
 		//
-		this._text = undefined;
+		this._interfaces = {};
 	}
-	async supports_text() {
-		let temp = this._text;
+	async supports_interface(method) {
+		let key = hex_from_method(method);
+		let temp = this._interfaces[key];
 		if (typeof temp === 'boolean') return temp;
 		if (!temp) {
-			temp = this._text = promise_queue(
-				// bytes4 constant private TEXT_INTERFACE_ID = 0x59d1d43c;
-				supports_interface(await this.ens.get_provider(), this.address, '59d1d43c'),
-				b => this._text = b
+			temp = this._interfaces = promise_queue(
+				supports_interface(await this.ens.get_provider(), this.address, method),
+				b => this._interfaces[key] = b
 			);
 		}
 		return temp();
@@ -270,20 +270,25 @@ export class ENSName {
 		let temp = this._address;
 		if (typeof temp === 'string') return temp;
 		if (!temp) {
-			temp = this._address = promise_queue(
-				this.get_addr(60).catch(err => {
-					if (!err?.cause?.reverted) throw err;
-					// fallback to old api
-					return this.call_resolver(ABIEncoder.method('addr(bytes32)').number(this.node)).then(dec => {
-						return dec.read_addr_bytes(); // read as bytes
-					});
-				}).then(v => {
-					if (v.length == 0) throw new Error(`ETH Address not set`);
-					if (v.length != 20) throw new Error(`Invalid ETH Address: expected 20 bytes`);
-					return standardize_address(hex_from_bytes(v));
-				}),
-				address => this._address = address
-			);
+			this.assert_valid_resolver();
+			// https://eips.ethereum.org/EIPS/eip-2304	
+			const METHOD = 'addr(bytes32,uint256)';
+			const METHOD_OLD = 'addr(bytes32)';
+			let p;
+			if (await this.resolver.supports_interface(METHOD)) {
+				p = this.get_addr(60);
+			} else if (await this.resolver.supports_interface(METHOD_OLD)) {
+				p = this.call_resolver(ABIEncoder.method(METHOD_OLD).number(this.node)).then(dec => {
+					return dec.read_addr_bytes(); 
+				});
+			} else {
+				throw new Error(`Resolver does not support addr`);
+			}
+			temp = this._address = promise_queue(p.then(v => {
+				if (v.length == 0) return NULL_ADDRESS;
+				if (v.length != 20) throw new Error(`Invalid ETH Address: expected 20 bytes`);
+				return standardize_address(hex_from_bytes(v));
+			}), s => this._address = s);
 		}
 		return temp();
 	}
@@ -360,15 +365,19 @@ export class ENSName {
 	}
 	// https://eips.ethereum.org/EIPS/eip-634
 	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/TextResolver.sol
-	//async get_text
 	async get_text(key) { 
 		if (typeof key !== 'string') throw new TypeError(`expected string`);
 		let temp = this._text[key];
 		if (typeof temp === 'string') return temp;
 		if (!temp) {
 			this.assert_valid_resolver();
+			// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-634.md
+			const METHOD = 'text(bytes32,string)';
+			if (!await this.resolver.supports_interface(METHOD)) {
+				throw new Error(`Resolver does not support text`);
+			}
 			temp = this._text[key] = promise_queue(
-				this.call_resolver(ABIEncoder.method('text(bytes32,string)').number(this.node).string(key)).then(x => {
+				this.call_resolver(ABIEncoder.method(METHOD).number(this.node).string(key)).then(x => {
 					return x.string();
 				}).catch(cause => {
 					throw new Error(`Error reading text ${key}: ${cause.message}`, {cause});
@@ -402,8 +411,12 @@ export class ENSName {
 		if (temp instanceof Uint8Array) return temp;
 		if (!temp) {
 			this.assert_valid_resolver();
+			const METHOD = 'addr(bytes32,uint256)';
+			if (!await this.resolver.supports_interface(METHOD)) {
+				throw new Error(`Resolver does not support text`);
+			}
 			temp = this._addr[type] = promise_queue(
-				this.call_resolver(ABIEncoder.method('addr(bytes32,uint256)').number(this.node).number(type)).then(dec => {
+				this.call_resolver(ABIEncoder.method(METHOD).number(this.node).number(type)).then(dec => {
 					return dec.memory();
 				}).catch(cause => {
 					throw new Error(`Error reading addr ${format_addr_type(type, true)}: ${cause.message}`, {cause});
@@ -463,12 +476,18 @@ export class ENSName {
 					let content = {};
 					if (hash.length > 0) {
 						content.hash = hash;
-						// https://github.com/multiformats/multicodec
-						let dec = new ABIDecoder(hash);
-						if (dec.uvarint() == 0xE3) { // ipfs
-							if (dec.read_byte() == 0x01 && dec.read_byte() == 0x70) { // check version and content-type
+						try {
+							// https://github.com/multiformats/multicodec
+							let dec = new ABIDecoder(hash);
+							let protocol = dec.uvarint();
+							let cid_version = dec.uvarint();
+							let content_type = dec.uvarint();
+							// TODO: this needs fixed
+							// either remove or use CID dependancy
+							if (protocol == 0xE3 && cid_version == 0x1 && content_type == 0x70) {
 								content.url = `ipfs://${base58_from_bytes(dec.read_bytes(dec.remaining))}`;
 							}
+						} catch (ignored) {							
 						}
 					}
 					return content;

@@ -2,7 +2,7 @@ import {retry_request} from './retry.js';
 
 // detect-provider is way too useless to require as a dependancy 
 // https://github.com/MetaMask/detect-provider/blob/main/src/index.ts
-export async function determine_window_provider({smart = true, timeout = 5000} = {}) {
+export async function determine_window_provider({smart = true, timeout = 3000} = {}) {
 	return new Promise((ful, rej) => {
 		let timer, handler;
 		const EVENT = 'ethereum#initialized';
