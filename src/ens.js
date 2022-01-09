@@ -1,9 +1,10 @@
-import {hex_from_bytes, keccak} from '@adraffy/keccak';
-import {ABIDecoder, ABIEncoder, Uint256, hex_from_method} from './abi.js';
+import {hex_from_bytes, keccak, utf8_from_bytes} from '@adraffy/keccak';
+import {ABIEncoder, Uint256, hex_from_method} from './abi.js';
 import {eth_call, supports_interface} from './eth.js';
-import {is_null_hex, promise_queue} from './utils.js';
+import {is_null_hex, promise_object_setter} from './utils.js';
 import {standardize_address, is_valid_address, NULL_ADDRESS} from './address.js';
-import {base58_from_bytes} from './base58.js';
+import {read_uvarint} from './uvarint.js';
+import {CID} from './cid.js';
 import {Providers} from './providers.js';
 import {standardize_chain_id} from './chains.js';
 import ADDR_TYPES from './ens-address-types.js';
@@ -149,15 +150,8 @@ export class ENS {
 		}
 	}
 	async get_eth_contract() {
-		let temp = this._dot_eth_contract;
-		if (typeof temp === 'string') return temp;
-		if (!temp) {
-			temp = this._dot_eth_contract = promise_queue(
-				this.resolve('eth').then(name => name.get_owner()).then(x => x.address),
-				address => this._dot_eth_contract = address
-			);
-		}
-		return temp();
+		if (this._dot_eth_contract !== undefined) return this._dot_eth_contract;
+		return promise_object_setter(this, '_dot_eth_contract', this.resolve('eth').then(name => name.get_owner()).then(x => x.address));
 	}
 	async is_dot_eth_available(label) {
 		return (await eth_call(
@@ -189,15 +183,11 @@ export class ENSResolver {
 	}
 	async supports_interface(method) {
 		let key = hex_from_method(method);
-		let temp = this._interfaces[key];
-		if (typeof temp === 'boolean') return temp;
-		if (!temp) {
-			temp = this._interfaces = promise_queue(
-				supports_interface(await this.ens.get_provider(), this.address, method),
-				b => this._interfaces[key] = b
-			);
-		}
-		return temp();
+		let value = this._interfaces[key];
+		if (value !== undefined) return value;
+		return promise_object_setter(this._interfaces, key, this.ens.get_provider().then(p => {
+			return supports_interface(p, this.address, method);
+		}));
 	}
 	toJSON() {
 		return this.address;
@@ -215,15 +205,8 @@ export class ENSOwner {
 		return this.address;
 	}
 	async get_primary_name() {
-		let temp = this._primary;
-		if (typeof temp === 'string' || temp === null) return temp;
-		if (!temp) {
-			temp = this._primary = promise_queue(
-				this.ens.primary_from_address(this.address),
-				address => this._primary = address
-			);
-		}
-		return temp();
+		if (this._primary !== undefined) return this._primary;
+		return promise_object_setter(this, '_primary', this.ens.primary_from_address(this.address));
 	}
 	async resolve() {
 		let name = await this.get_primary_name();
@@ -267,10 +250,9 @@ export class ENSName {
 		return eth_call(await this.ens.get_provider(), this.resolver.address, ...args);
 	}
 	async get_address() {
-		let temp = this._address;
-		if (typeof temp === 'string') return temp;
-		if (!temp) {
-			this.assert_valid_resolver();
+		if (this._address !== undefined) return this._address;
+		this.assert_valid_resolver();
+		return promise_object_setter(this, '_address', (async () => {
 			// https://eips.ethereum.org/EIPS/eip-2304	
 			const METHOD = 'addr(bytes32,uint256)';
 			const METHOD_OLD = 'addr(bytes32)';
@@ -284,28 +266,19 @@ export class ENSName {
 			} else {
 				throw new Error(`Resolver does not support addr`);
 			}
-			temp = this._address = promise_queue(p.then(v => {
-				if (v.length == 0) return NULL_ADDRESS;
-				if (v.length != 20) throw new Error(`Invalid ETH Address: expected 20 bytes`);
-				return standardize_address(hex_from_bytes(v));
-			}), s => this._address = s);
-		}
-		return temp();
+			let v = await p;
+			if (v.length == 0) return NULL_ADDRESS;
+			if (v.length != 20) throw new Error(`Invalid ETH Address: expected 20 bytes`);
+			return standardize_address(hex_from_bytes(v));
+		})());
 	}
 	async get_owner() {
-		let temp = this._owner;
-		if (temp instanceof ENSOwner) return temp;
-		if (!temp) {
-			temp = this._owner = promise_queue(
-				this.ens.call_registry(ABIEncoder.method('owner(bytes32)').number(this.node)).then(dec => {
-					return new ENSOwner(this.ens, dec.addr());
-				}).catch(cause => {
-					throw new Error(`Read owner failed: ${cause.message}`, {cause});
-				}),
-				owner => this._owner = owner
-			);
-		}
-		return temp();
+		if (this._owner !== undefined) return this._owner;
+		return promise_object_setter(this, '_owner', this.ens.call_registry(ABIEncoder.method('owner(bytes32)').number(this.node)).then(dec => {
+			return new ENSOwner(this.ens, dec.addr());
+		}).catch(cause => {
+			throw new Error(`Read owner failed: ${cause.message}`, {cause});
+		}));
 	}
 	async get_owner_address() { return (await this.get_owner()).address; }
 	async get_owner_primary_name() { return (await this.get_owner()).get_primary_name(); }	
@@ -351,47 +324,39 @@ export class ENSName {
 	}
 	// this uses norm name if display name isn't set or invalid
 	async get_display_name() {
-		if (this._display) return this._display;
-		let display = await this.get_text('display');
-		return this._display = this.is_equivalent_name(display) ? display : this.name;
+		if (this._display !== undefined) return this._display;
+		return promise_object_setter(this, '_display', this.get_text('display').then(display => {
+			return this.is_equivalent_name(display) ? display : this.name
+		}));
 	}
 	async get_avatar() {
-		if (this._avatar) return this._avatar;
-		return this._avatar = await parse_avatar(
+		if (this._avatar !== undefined) return this._avatar;
+		return promise_object_setter(this, '_avatar', parse_avatar(
 			await this.get_text('avatar'), // throws
 			this.ens.providers,
 			await this.get_address()
-		);
+		));
 	}
 	// https://eips.ethereum.org/EIPS/eip-634
 	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/TextResolver.sol
 	async get_text(key) { 
 		if (typeof key !== 'string') throw new TypeError(`expected string`);
-		let temp = this._text[key];
-		if (typeof temp === 'string') return temp;
-		if (!temp) {
-			this.assert_valid_resolver();
+		let value = this._text[key];
+		if (value !== undefined) return value;
+		this.assert_valid_resolver();
+		return promise_object_setter(this._text, key, (async () => {
 			// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-634.md
 			const METHOD = 'text(bytes32,string)';
 			if (!await this.resolver.supports_interface(METHOD)) {
 				throw new Error(`Resolver does not support text`);
 			}
-			temp = this._text[key] = promise_queue(
-				this.call_resolver(ABIEncoder.method(METHOD).number(this.node).string(key)).then(x => {
-					return x.string();
-				}).catch(cause => {
-					throw new Error(`Error reading text ${key}: ${cause.message}`, {cause});
-				}),
-				s => {
-					if (typeof s === 'string') {
-						this._text[key] = s;
-					} else {
-						delete this._text[key];
-					}
-				}
-			);
-		}
-		return temp();
+			try {
+				let dec = await this.call_resolver(ABIEncoder.method(METHOD).number(this.node).string(key));
+				return dec.string();
+			} catch (cause) {
+				throw new Error(`Error reading text ${key}: ${cause.message}`, {cause});
+			}
+		})());
 	}
 	async get_texts(keys) {
 		if (keys === undefined) {
@@ -407,30 +372,21 @@ export class ENSName {
 	// addrs are stored by type
 	async get_addr(addr) { 
 		let type = parse_addr_type(addr);
-		let temp = this._addr[type];
-		if (temp instanceof Uint8Array) return temp;
-		if (!temp) {
-			this.assert_valid_resolver();
+		let value = this._addr[type];
+		if (value !== undefined) return value;		
+		this.assert_valid_resolver();
+		return promise_object_setter(this._addr, type, (async () => {
 			const METHOD = 'addr(bytes32,uint256)';
 			if (!await this.resolver.supports_interface(METHOD)) {
 				throw new Error(`Resolver does not support text`);
 			}
-			temp = this._addr[type] = promise_queue(
-				this.call_resolver(ABIEncoder.method(METHOD).number(this.node).number(type)).then(dec => {
-					return dec.memory();
-				}).catch(cause => {
-					throw new Error(`Error reading addr ${format_addr_type(type, true)}: ${cause.message}`, {cause});
-				}),
-				v => {
-					if (v instanceof Uint8Array) {
-						this._addr[type] = v;
-					} else {
-						delete this._addr[type];
-					}
-				}
-			);
-		}
-		return temp();
+			try {
+				let dec = await this.call_resolver(ABIEncoder.method(METHOD).number(this.node).number(type));
+				return dec.memory();
+			} catch(cause) {
+				throw new Error(`Error reading addr ${format_addr_type(type, true)}: ${cause.message}`, {cause});
+			}
+		})());
 	}
 	async get_addrs(addrs, named = true) {
 		let types;
@@ -447,58 +403,73 @@ export class ENSName {
 	// https://github.com/ethereum/EIPs/pull/619
 	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/PubkeyResolver.sol
 	async get_pubkey() {
-		let temp = this._pubkey;
-		if (typeof temp === 'object') return temp;
-		if (!temp) {
-			this.assert_valid_resolver();
-			temp = this._pubkey = promise_queue(
-				this.call_resolver(ABIEncoder.method('pubkey(bytes32)').number(this.node)).then(dec => {
-					return {x: dec.uint256(), y: dec.uint256()};
-				}).catch(cause => {
-					throw new Error(`Error reading pubkey: ${cause.message}`, {cause});
-				}),
-				pubkey => this._pubkey = pubkey
-			);
-		}
-		return temp();
+		if (this._pubkey !== undefined) return this._pubkey;
+		this.assert_valid_resolver();
+		return promise_object_setter(this, '_pubkey', (async () => {
+			try {
+				let dec = await this.call_resolver(ABIEncoder.method('pubkey(bytes32)').number(this.node));
+				return {x: dec.uint256(), y: dec.uint256()};
+			} catch(cause) {
+				throw new Error(`Error reading pubkey: ${cause.message}`, {cause});
+			}
+		})());
 	}
 	// https://eips.ethereum.org/EIPS/eip-1577
 	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/ContentHashResolver.sol
 	async get_content() {
-		let temp = this._content;
-		if (typeof temp === 'object') return temp;
-		if (!temp) {
-			this.assert_valid_resolver();
-			temp = this._content = promise_queue(
-				this.call_resolver(ABIEncoder.method('contenthash(bytes32)').number(this.node)).then(dec => {
-					return dec.memory();
-				}).then(hash => {
-					let content = {};
-					if (hash.length > 0) {
-						content.hash = hash;
-						try {
-							// https://github.com/multiformats/multicodec
-							let dec = new ABIDecoder(hash);
-							let protocol = dec.uvarint();
-							let cid_version = dec.uvarint();
-							let content_type = dec.uvarint();
-							// TODO: this needs fixed
-							// either remove or use CID dependancy
-							if (protocol == 0xE3 && cid_version == 0x1 && content_type == 0x70) {
-								content.url = `ipfs://${base58_from_bytes(dec.read_bytes(dec.remaining))}`;
-							}
-						} catch (ignored) {							
-						}
-					}
-					return content;
-				}).catch(cause => {
-					throw new Error(`Error reading content: ${cause.message}`, {cause});
-				}),
-				content => this._content = content
-			);
-		}
-		return temp();
+		if (this._content !== undefined) return this._content;
+		this.assert_valid_resolver();
+		return promise_object_setter(this, '_content', (async () => {
+			let hash;
+			try {
+				let dec = await this.call_resolver(ABIEncoder.method('contenthash(bytes32)').number(this.node));
+				hash = dec.memory();
+			} catch (cause) {
+				throw new Error(`Error reading content: ${cause.message}`, {cause});
+			}
+			if (hash.length == 0) return {};
+			let content = parse_content(hash);
+			content.hash = hash;
+			return content;
+		})());
 	}
+}
+
+// https://eips.ethereum.org/EIPS/eip-1577
+export function parse_content(v) {
+	let protocol;
+	[protocol, v] = read_uvarint(v);
+	switch (protocol) {
+		case 0xE3: {
+			let ret = {type: 'ipfs', protocol};
+			try {
+				let cid = CID.from_bytes(v);
+				ret.cid = cid;
+				ret.url = `ipfs://${cid.toString()}`;				
+			} catch (err) {
+				ret.error = err;
+			}
+			return ret;
+		};
+		case 0xE5: {
+			let ret = {type: 'ipns', protocol};
+			try {
+				let cid = CID.from_bytes(v);
+				if (cid.version !== 1) {
+					throw new Error('invalid CID version');
+				}
+				if (cid.hash.code !== 0) { // identity
+					throw new Error('expected identity hash');
+				}				
+				ret.cid = cid;
+				ret.url = `ipns://${cid}`;
+			} catch (err) {
+				ret.error = err;
+			} 
+			return ret;
+		}
+		default: return {type: 'unknown', protocol};
+	}	
 }
 
 const AVATAR_TYPE_INVALID = 'invalid';
@@ -579,9 +550,9 @@ export async function parse_avatar(avatar, provider, address) {
 				try {
 					let [balance, meta_uri] = await Promise.all([
 						is_valid_address(address) 
-							? eth_call(provider, contract, ABIEncoder.method('balanceOf(address,uint256)').addr(address).number(token)).then(x => x.number())
+							? eth_call(provider, contract, ABIEncoder.method('balanceOf(address,uint256)').addr(address).number(token)).then(dec => dec.number())
 							: -1,
-						eth_call(provider, contract, ABIEncoder.method('uri(uint256)').number(token)).then(x => x.string())
+						eth_call(provider, contract, ABIEncoder.method('uri(uint256)').number(token)).then(dec => dec.string())
 					]);
 					// The string format of the substituted hexadecimal ID MUST be lowercase alphanumeric: [0-9a-f] with no 0x prefix.
 					ret.meta_uri = meta_uri.replace('{id}', token.hex.slice(2)); 
@@ -604,7 +575,6 @@ export {ADDR_TYPES}; // mutable?
 
 export function format_addr_type(type, include_type = false) {
 	let pos = Object.values(ADDR_TYPES).indexOf(type);
-	let name;
 	if (pos >= 0) { // the type has a name
 		let s = Object.keys(ADDR_TYPES)[pos];
 		if (include_type) s = `${s}<${type}>`;

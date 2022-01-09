@@ -234,6 +234,12 @@ export class ABIDecoder {
 		if (end > buf.length) throw new RangeError('buffer overflow');
 		return buf.subarray(pos, end);
 	}
+	peek_byte(offset = 0) {		
+		let {pos, buf} = this;
+		pos += offset;
+		if (!(pos >= 0 && pos < buf.length)) throw new RangeError(`invalid offset: ${offset}`);
+		return buf[pos];
+	}
 	read_byte() {
 		let {pos, buf} = this;
 		if (pos >= buf.length) throw new RangeError('buffer overflow');

@@ -3,7 +3,7 @@ import {
 	is_checksum_address, 
 	is_valid_address,
 	is_null_hex,
-	promise_queue,
+	promise_object_setter,
 	data_uri_from_json
 } from '../index.js';
 import fetch from 'node-fetch';
@@ -31,8 +31,10 @@ console.log('OK');
 console.log(is_checksum_address(ADDRESSES[0]));
 console.log(is_valid_address(ADDRESSES[0].toLowerCase()));
 
+console.log(await fetch(data_uri_from_json({a: 1})).then(x => x.json()));
 
-let f = promise_queue(new Promise(ful => setTimeout(() => {
+/*
+let f = promise_object_setter(new Promise(ful => setTimeout(() => {
 	console.log('once');
 	ful('a')
 }, 1000)));
@@ -61,4 +63,10 @@ if (!threw) throw new Error(`didn't throw`);
 
 await promise_queue(Promise.resolve(true), () => { throw new Error('wtf'); });
 
-console.log(await fetch(data_uri_from_json({a: 1})).then(x => x.json()));
+
+Promise.resolve(1).then(() => { throw 1 }, err => {
+	console.log('a');
+}).catch(() => {
+	console.log('b');
+});
+*/

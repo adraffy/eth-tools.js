@@ -48,8 +48,10 @@ console.log(await nfs.get_token_uri(1));
 */
 
 
-import {ENS, keccak, is_multihash, Uint256} from '../index.js';
+import {ENS, keccak, Uint256} from '../index.js';
 import {WS as provider} from './nodejs-provider.js';
+
+
 
 
 
@@ -79,15 +81,15 @@ console.log(await name.get_texts());
 console.log(await ens.get_dot_eth_owner('raffy'));
 */
 
-let name = await ens.resolve('treysongz.eth');
+let name = await ens.resolve('zadok7.eth');
 
 //console.log(name.resolver);
 
 //console.log(await name.resolver.supports_text());
 
 
-console.log(await name.get_avatar('avatar'));
-
+//console.log(await name.get_avatar('avatar'));
+console.log(await name.get_content());
 
 /*
 console.log([
@@ -102,3 +104,7 @@ console.log([
 */
 
 //console.log(is_multihash('QmRwgn6qNPwzdDJfpPuSeq2Qjodi6z3n5QmdKk82fUJb1Y'));
+
+
+console.log(await provider.req('eth_getCode', '0x51050ec063d393217B436747617aD1C2285Aeeee', 'latest'));
+console.log(await provider.req('eth_getCode', '0x57f1887a8bf19b14fc0df6fd9b2acc9af147ea85', 'latest'));

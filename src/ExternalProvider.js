@@ -47,9 +47,13 @@ export function make_smart(provider) {
 		}
 		return retry_request(provider.request.bind(provider), obj);
 	}
+	async function req(method, ...params) {
+		return request({method, params});
+	}
 	return new Proxy(provider, {
 		get: function(obj, prop) {		
 			switch (prop) {
+				case 'req': return req;
 				case 'request': return request;
 				case 'chain_id': return chain_id;
 				case 'source': return source;

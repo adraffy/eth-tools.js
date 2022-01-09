@@ -1,5 +1,5 @@
-import {EventEmitter} from './EventEmitter.js';
-export class WebSocketProvider extends EventEmitter {
+import {BaseProvider} from './BaseProvider.js';
+export class WebSocketProvider extends BaseProvider {
 	constructor({url, WebSocket: ws_api, source, request_timeout = 30000, idle_timeout = 60000}) {
 		if (typeof url !== 'string') throw new TypeError('expected url');
 		if (!ws_api) ws_api = globalThis.WebSocket;
@@ -18,7 +18,6 @@ export class WebSocketProvider extends EventEmitter {
 		this._chain_id = undefined;
 		this._source = source;
 	}
-	get isSmartProvider() { return true; }
 	get source() {
 		return this._source ?? this.url;
 	}

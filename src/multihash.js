@@ -1,42 +1,40 @@
-import {bytes_from_base58} from './base58.js';
-import {ABIDecoder} from './abi.js';
+import {sizeof_uvarint, read_uvarint, write_uvarint} from './uvarint.js';
+import {decode_multibase} from './multibase.js';
 
 // https://github.com/multiformats/multihash
 // sha1 = 0x11
 // sha256 = 0x12
 
-export function is_multihash(s) {
-	// FIX: this is assuming base58
-	// TODO: split this into a parser
-	try {
-		let dec = new ABIDecoder(bytes_from_base58(s));
-		let type = dec.uvarint();
-		let size = dec.uvarint();
-		return dec.remaining === size;
-	} catch (ignored) {
-		return false;
+export class Multihash {
+	static from_str(s) {
+		return this.from_bytes(decode_multibase(s));
 	}
-}
-
-export function fix_multihash_uri(s) {
-	if (is_multihash(s)) { // just a hash
-		return `ipfs://${s}`;
+	static from_bytes(v) {
+		let code, size;
+		[code, v] = read_uvarint(v);
+		[size, v] = read_uvarint(v);
+		if (v.length !== size) throw new Error(`expected ${size}, got ${v.length} bytes`)
+		return new this(code, v.slice());
 	}
-	let match;
-	if (match = s.match(/^ipfs\:\/\/ipfs\/(.*)$/i)) { // fix "ipfs://ipfs/.."
-		return `ipfs://${match[1]}`;
+	constructor(code, hash) {
+		this.code = code;
+		this.hash = hash;
 	}
-	/*
-	let match;
-	if ((match = s.match(/\/ipfs\/([1-9a-zA-Z]{32,})(\/?.*)$/)) && is_multihash(match[1])) {
-		s = `ipfs://${match[1]}${match[2]}`;
+	get length() {
+		return sizeof_uvarint(this.code) + sizeof_uvarint(this.hash.length) + this.hash.length;
 	}
-	*/
-	return s;
-}
-
-// should this be here?
-// replace ipfs:// with default https://ipfs.io
-export function replace_ipfs_protocol(s) {
-	return s.replace(/^ipfs:\/\//i, 'https://ipfs.io/ipfs/');
+	get bytes() {
+		let v = new Uint8Array(this.length);
+		this.write_bytes(v, 0);
+		return v;
+	}
+	write_bytes(v, pos = 0) {
+		pos = write_uvarint(v, this.code, pos);
+		pos = write_uvarint(v, this.hash.length, pos);
+		v.set(this.hash, pos);
+		return pos;
+	}
+	toJSON() {
+		return {code: this.code, hash: this.hash};
+	}
 }

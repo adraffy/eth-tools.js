@@ -5,27 +5,14 @@ export function compare_arrays(a, b) {
 	return c;
 }
 
-// returns promises mirror the initial promise
-// callback is fired once with (value, err)
-
-export function promise_queue(promise, callback) {
-	let queue = [];	
-	promise.then(ret => {
-		for (let x of queue) x.ful(ret); 
-		let cb = callback;
-		if (cb) {
-			callback = queue; // mark used
-			cb(ret); // could throw
-		}
+export function promise_object_setter(obj, key, promise) {
+	obj[key] = promise;
+	return promise.then(ret => {
+		obj[key] = ret;
+		return ret;
 	}).catch(err => {
-		if (callback === queue) throw err; // success callback threw
-		for (let x of queue) x.rej(err);
-		callback?.(null, err); // could throw
-	}).catch(err => {		
-		console.error('Uncaught callback exception: ', err);
-	});
-	return () => new Promise((ful, rej) => {
-		queue.push({ful, rej});
+		delete obj[key];
+		throw err;
 	});
 }
 
@@ -35,4 +22,9 @@ export function data_uri_from_json(json) {
 
 export function is_null_hex(s) {
 	return /^(0x)?[0]+$/i.test(s); // should this be 0+?
+}
+
+// replace ipfs:// with default https://ipfs.io
+export function replace_ipfs_protocol(s) {
+	return s.replace(/^ipfs:\/\//i, 'https://dweb.link/ipfs/');
 }

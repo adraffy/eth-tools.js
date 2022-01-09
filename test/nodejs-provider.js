@@ -10,5 +10,5 @@ export const FETCH = no_idle_fetch('https://cloudflare-eth.com');
 export const providers = new Providers()
 	.add_static(1, WS)
 	.add_static(1, FETCH)
-	.add_static(137, no_idle_fetch('https://rpc-mainnet.maticvigil.com'))
+	.add_static(137, no_idle_fetch('https://polygon-rpc.com'))
 	.add_static(43114, no_idle_fetch('https://api.avax.network/ext/bc/C/rpc'));

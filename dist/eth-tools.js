@@ -375,27 +375,14 @@ function compare_arrays(a, b) {
 	return c;
 }
 
-// returns promises mirror the initial promise
-// callback is fired once with (value, err)
-
-function promise_queue(promise, callback) {
-	let queue = [];	
-	promise.then(ret => {
-		for (let x of queue) x.ful(ret); 
-		let cb = callback;
-		if (cb) {
-			callback = queue; // mark used
-			cb(ret); // could throw
-		}
+function promise_object_setter(obj, key, promise) {
+	obj[key] = promise;
+	return promise.then(ret => {
+		obj[key] = ret;
+		return ret;
 	}).catch(err => {
-		if (callback === queue) throw err; // success callback threw
-		for (let x of queue) x.rej(err);
-		callback?.(null, err); // could throw
-	}).catch(err => {		
-		console.error('Uncaught callback exception: ', err);
-	});
-	return () => new Promise((ful, rej) => {
-		queue.push({ful, rej});
+		delete obj[key];
+		throw err;
 	});
 }
 
@@ -405,6 +392,11 @@ function data_uri_from_json(json) {
 
 function is_null_hex(s) {
 	return /^(0x)?[0]+$/i.test(s); // should this be 0+?
+}
+
+// replace ipfs:// with default https://ipfs.io
+function replace_ipfs_protocol(s) {
+	return s.replace(/^ipfs:\/\//i, 'https://dweb.link/ipfs/');
 }
 
 const NULL_ADDRESS = '0x0000000000000000000000000000000000000000';
@@ -419,10 +411,10 @@ function standardize_address(s, checksum = true) {
 	if (!/^[a-f0-9]{40}$/.test(lower)) throw new TypeError('expected 40-char hex');
 	let ret = lower;
 	if (checksum && !/^[0-9]+$/.test(ret)) { 
-		let upper = s.toUpperCase();
 		let hash = keccak().update(lower).hex;
 		ret = [...lower].map((x, i) => hash.charCodeAt(i) >= 56 ? x.toUpperCase() : x).join('');
-		if (s !== ret && s !== lower && s !== upper) {
+		// dont enforce checksum on full lower/upper case
+		if (s !== ret && s !== lower && s !== lower.toLowerCase()) {
 			throw new Error(`checksum failed: ${s}`);
 		}
 	}
@@ -678,6 +670,12 @@ class ABIDecoder {
 		if (end > buf.length) throw new RangeError('buffer overflow');
 		return buf.subarray(pos, end);
 	}
+	peek_byte(offset = 0) {		
+		let {pos, buf} = this;
+		pos += offset;
+		if (!(pos >= 0 && pos < buf.length)) throw new RangeError(`invalid offset: ${offset}`);
+		return buf[pos];
+	}
 	read_byte() {
 		let {pos, buf} = this;
 		if (pos >= buf.length) throw new RangeError('buffer overflow');
@@ -834,106 +832,406 @@ class ABIEncoder {
 	}
 }
 
-// https://tools.ietf.org/id/draft-msporny-base58-03.html
+// the choice of bases in multibase spec are shit
+// why are there strings that aren't valid bases???
+// why isn't this just encoded as an integer???
 
-// removed: "IOl0+/"
-const BASE_58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'; 
-
-function base58_from_bytes(v) {
-	let digits = [];
-	let zero = 0;
-	for (let x of v) {
-		if (digits.length == 0 && x == 0) {
-			zero++;
-			continue;
-		}
-		for (let i = 0; i < digits.length; ++i) {
-			let xx = (digits[i] << 8) | x;
-			digits[i] = xx % 58;
-			x = (xx / 58) | 0;
-		}
-		while (x > 0) {
-			digits.push(x % 58);
-			x = (x / 58) | 0;
-		}
+class Lookup {
+	constructor(lookup) {
+		let v = [...lookup];
+		if (v.length !== lookup.length) throw new TypeError(`expected UTF16`);
+		this.lookup = lookup;
+		this.map = Object.fromEntries(v.map((x, i) => [x, i]));
 	}
-	for (; zero > 0; zero--) digits.push(0);
-	return String.fromCharCode(...digits.reverse().map(x => BASE_58.charCodeAt(x)));
+	parse(s) {
+		let i = this.map[s];
+		if (i === undefined) throw new TypeError(`invalid digit ${s}`);
+		return i;
+	}
 }
 
-function bytes_from_base58(s) {
-	if (typeof s !== 'string') throw new TypeError('expected string');
-	let v = new Uint8Array(s.length);
-	let zeros = 0;
-	let n = 0;
-	for (let c of s) {
-		let carry = BASE_58.indexOf(c);
-		if (carry < 0) throw new TypeError('expected base58 string');
-		if (n == 0) {
-			if (carry == 0) {
-				zeros++;
-				continue;
-			} else {
-				n = 1;
+class Prefix0 extends Lookup {
+	bytes_from_str(s) {
+		let {lookup} = this;
+		let base = lookup.length;
+		let n = s.length;
+		let v = new Uint8Array(n);
+		let pos = 0;
+		for (let c of s) {
+			let carry = this.parse(c);
+			for (let i = 0; i < pos; i++) {
+				carry += v[i] * base;
+				v[i] = carry;
+				carry >>= 8;
+			}
+			while (carry > 0) {
+				v[pos++] = carry;
+				carry >>= 8;
 			}
 		}
+		for (let i = 0; i < n && s[i] === lookup[0]; i++) pos++;
+		return v.subarray(0, pos).reverse();
+	}
+	str_from_bytes(v) {
+		let base = this.lookup.length;
+		let u = [];
+		for (let x of v) {
+			for (let i = 0; i < u.length; ++i) {
+				let xx = (u[i] << 8) | x;
+				u[i] = xx % base;
+				x = (xx / base)|0;
+			}
+			while (x > 0) {
+				u.push(x % base);
+				x = (x / base)|0;
+			}
+		}	
+		for (let i = 0; i < v.length && v[i] == 0; i++) u.push(0);
+		return u.reverse().map(x => this.lookup[x]).join('');
+	}
+}
+
+class RFC4648 extends Lookup {
+	constructor(lookup, w) {
+		super(lookup);
+		this.w = w;
+	}
+	bytes_from_str(s, pad) {
+		let {w} = this;
+		let n = s.length;
+		let pos = 0;
+		let carry = 0;
+		let width = 0;
+		// remove padding
+		while (pad && n > 0 && s[n-1] == '=') --n;
+		let v = new Uint8Array((n * w) >> 3);		
 		for (let i = 0; i < n; i++) {
-			carry += v[i] * 58;
-			v[i] = carry;
-			carry >>= 8;
+			carry = (carry << w) | this.parse(s[i]);
+			width += w;
+			if (width >= 8) {
+				v[pos++] = (carry >> (width -= 8)) & 0xFF;
+			}
 		}
-		while (carry > 0) {
-			v[n++] = carry;
-			carry >>= 8;
+		// the bits afterwards should be 0
+		if ((carry << (8 - width)) & 0xFF) throw new Error('wtf');
+		return v;
+	}
+	str_from_bytes(v, pad) {
+		let {w, lookup} = this;
+		let mask = (1 << w) - 1;
+		let carry = 0;
+		let width = 0;
+		let s = '';
+		let n = v.length;
+		for (let i = 0; i < n; i++) {
+			carry = (carry << 8) | v[i];
+			width += 8;
+			while (width >= w) {
+				s += lookup[(carry >> (width -= w)) & mask];
+			}
 		}
+		if (width) { // left align the remaining bits
+			s += lookup[(carry << (w - width)) & mask];
+		}
+		while (pad && (s.length * w) & 7) s += '=';
+		return s;
 	}
-	n += zeros;
-	for (let a = 0, b = n - 1; a < b; a++, b--) {
-		let temp = v[a];
-		v[a] = v[b];
-		v[b] = temp;
+}
+
+/*
+export const BASE64_JS = {
+	bytes_from_str(s) {
+		return Uint8Array.from(atob(s), x => x.charCodeAt(0));
+	},
+	str_from_bytes(v) {
+		return btoa(String.fromCharCode(...v));
 	}
-	return v.subarray(0, n);
+};
+*/
+
+// https://www.rfc-editor.org/rfc/rfc4648.html#section-4 
+const ALPHA = 'abcdefghijklmnopqrstuvwxyz';
+const RADIX = '0123456789' + ALPHA;
+const BASE64 = new RFC4648(ALPHA.toUpperCase() + ALPHA + RADIX.slice(0, 10) + '+=', 6);
+// https://www.rfc-editor.org/rfc/rfc4648.html#section-5
+const BASE64_URL = new RFC4648(ALPHA.toUpperCase() + ALPHA + RADIX.slice(0, 10) + '-_', 6);
+// https://tools.ietf.org/id/draft-msporny-base58-03.html 
+const BASE58_BTC = new Prefix0('123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz');
+// https://github.com/multiformats/multibase/blob/master/rfcs/Base36.md
+const BASE36 = new Prefix0(RADIX);
+// https://www.rfc-editor.org/rfc/rfc4648.html#section-7
+const BASE32_HEX = new RFC4648(RADIX.slice(0, 32), 5);
+// https://www.rfc-editor.org/rfc/rfc4648.html#section-6
+const BASE32 = new RFC4648('abcdefghijklmnopqrstuvwxyz234567', 5);
+// https://www.rfc-editor.org/rfc/rfc4648.html#section-8
+const BASE16 = new RFC4648(RADIX.slice(0, 16), 4);
+// https://github.com/multiformats/multibase/blob/master/rfcs/Base10.md
+const BASE10 = new Prefix0(RADIX.slice(0, 10)); 
+// https://github.com/multiformats/multibase/blob/master/rfcs/Base8.md
+const BASE8 = new RFC4648(RADIX.slice(0, 8), 3);
+// https://github.com/multiformats/multibase/blob/master/rfcs/Base2.md
+const BASE2 = new RFC4648(RADIX.slice(0, 2), 1);
+
+function bind(base, ...a) {
+	return {
+		decode: s => base.bytes_from_str(s, ...a),
+		encode: v => base.str_from_bytes(v, ...a)
+	};
+}
+
+// https://github.com/multiformats/multibase#multibase-table  
+const MULTIBASES = {
+	'0': {...bind(BASE2), name: 'base2'},
+	'7': {...bind(BASE8), name: 'base8'},
+	'9': {...bind(BASE10), name: 'base10'},
+	'f': {...bind(BASE16), case: false, name: 'base16'},
+	'F': {...bind(BASE16), case: true, name: 'base16upper'},
+	'v': {...bind(BASE32_HEX), case: false, name: 'base32hex'},
+	'V': {...bind(BASE32_HEX), case: true, name: 'base32hexupper'},
+	't': {...bind(BASE32_HEX, true), case: false, name: 'base32hexpad'},
+	'T': {...bind(BASE32_HEX, true), case: true, name: 'base32hexpadupper'},
+	'b': {...bind(BASE32), case: false,name: 'base32'},
+	'B': {...bind(BASE32), case: true, name: 'base32upper'},
+	'c': {...bind(BASE32, true), case: false,name: 'base32pad'},
+	'C': {...bind(BASE32, true), case: true, name: 'base32padupper'},
+	// h
+	'k': {...bind(BASE36), case: false,name: 'base36'},
+	'K': {...bind(BASE36), case: true, name: 'base36upper'},
+	'z': {...bind(BASE58_BTC), name: 'base58btc'},
+	// Z
+	'm': {...bind(BASE64), name: 'base64'},
+	'M': {...bind(BASE64, true), name: 'base64pad'},
+	'u': {...bind(BASE64_URL), name: 'base64url'},
+	'U': {...bind(BASE64_URL, true), name: 'base64urlpad'},
+	// p
+	'1': {...bind(BASE58_BTC), name: 'base58btc-Identity'},
+	'Q': {...bind(BASE58_BTC), name: 'base58btc-CIDv0'},
+};
+for (let [k, v] of Object.entries(MULTIBASES)) {
+	v.prefix = k;
+	MULTIBASES[v.name] = v;
+}
+
+function decode_multibase(s, prefix) {
+	if (typeof s !== 'string') throw new TypeError('expected string');
+	if (!prefix) { 
+		prefix = s[0];
+		s = s.slice(1);
+	}
+	let mb = MULTIBASES[prefix];
+	if (!mb) throw new Error(`Unknown multihash: ${prefix}`);	
+	if (mb.case !== undefined) s = s.toLowerCase();
+	return mb.decode(s);
+}
+
+function encode_multibase(prefix, v, prefixed = true) {
+	let mb = MULTIBASES[prefix];
+	if (!mb) throw new Error(`Unknown multibase: ${prefix}`);
+	let s = mb.encode(v);
+	if (mb.upper) s = s.toUpperCase();
+	if (prefixed) s = mb.prefix + s; 
+	return s;
+}
+
+//https://github.com/multiformats/unsigned-varint
+
+const MAX_SCALE = (() => {
+	let max = 1;
+	while (true) {
+		let next = max * 0x80;
+		if (!Number.isSafeInteger(next)) break;
+		max = next;
+	}
+	return max;
+})();
+
+function assert_uvarint(i) {	
+	if (!Number.isSafeInteger(i) || i < 0) {
+		throw new TypeError(`expected uvarint: ${i}`);
+	}
+}
+
+// returns number of bytes to encode the int
+function sizeof_uvarint(i) {
+	assert_uvarint(i);
+	let len = 1;
+	for (; i >= 0x80; len++) {
+		i = Math.floor(i / 0x80);
+	}
+	return len;
+}
+
+// reads a uvarint from Uint8Array 
+// returns [result, subarray]
+// where subarray sliced off what was consumed
+function read_uvarint(v, pos = 0) {
+	if (!ArrayBuffer.isView(v)) {
+		throw new TypeError(`expected ArrayBufferView`);
+	}
+	let i = 0;
+	let x = 1;
+	while (true) {
+		if (pos >= v.length) throw new RangeError(`buffer overflow`);
+		let next = v[pos++];
+		i += (next & 0x7F) * x;
+		if ((next & 0x80) == 0) break;
+		if (x == MAX_SCALE) throw new RangeError('uvarint overflow');
+		x *= 0x80;
+	}
+	return [i, v.subarray(pos)];
+}
+
+// write a uvarint of i into Uint8Array at pos
+// returns new position
+function write_uvarint(v, i, pos = 0) {
+	if (!Array.isArray(v) && !ArrayBuffer.isView(v)) {
+		throw new TypeError(`expected ArrayLike`);
+	}
+	assert_uvarint(i);
+	while (true) {
+		if (pos >= v.length) throw new RangeError(`buffer overflow`);
+		if (i < 0x80) break;
+		v[pos++] = (i & 0x7F) | 0x80;
+		i = Math.floor(i / 0x80);
+	}
+	v[pos++] = i;	
+	return pos;
 }
 
 // https://github.com/multiformats/multihash
 // sha1 = 0x11
 // sha256 = 0x12
 
-function is_multihash(s) {
-	// FIX: this is assuming base58
-	// TODO: split this into a parser
-	try {
-		let dec = new ABIDecoder(bytes_from_base58(s));
-		let type = dec.uvarint();
-		let size = dec.uvarint();
-		return dec.remaining === size;
-	} catch (ignored) {
-		return false;
+class Multihash {
+	static from_str(s) {
+		return this.from_bytes(decode_multibase(s));
+	}
+	static from_bytes(v) {
+		let code, size;
+		[code, v] = read_uvarint(v);
+		[size, v] = read_uvarint(v);
+		if (v.length !== size) throw new Error(`expected ${size}, got ${v.length} bytes`)
+		return new this(code, v.slice());
+	}
+	constructor(code, hash) {
+		this.code = code;
+		this.hash = hash;
+	}
+	get length() {
+		return sizeof_uvarint(this.code) + sizeof_uvarint(this.hash.length) + this.hash.length;
+	}
+	get bytes() {
+		let v = new Uint8Array(this.length);
+		this.write_bytes(v, 0);
+		return v;
+	}
+	write_bytes(v, pos = 0) {
+		pos = write_uvarint(v, this.code, pos);
+		pos = write_uvarint(v, this.hash.length, pos);
+		v.set(this.hash, pos);
+		return pos;
+	}
+	toJSON() {
+		return {code: this.code, hash: this.hash};
 	}
 }
 
-function fix_multihash_uri(s) {
-	if (is_multihash(s)) { // just a hash
-		return `ipfs://${s}`;
+// https://github.com/multiformats/cid/blob/master/original-rfc.md
+// https://github.com/multiformats/cid#cidv1
+
+class CID {
+	static from_str(s) {
+		if (typeof s !== 'string') throw new TypeError('expected string');
+		if (s.length == 46 && s.startsWith('Qm')) {
+			return this.from_bytes(BASE58_BTC.bytes_from_str(s));
+		} else {
+			let v = decode_multibase(s);
+			if (v[0] == 0x12) throw new Error(`CIDv0 cannot be multibase: ${s}`);
+			return this.from_bytes(v);
+		}
 	}
-	let match;
-	if (match = s.match(/^ipfs\:\/\/ipfs\/(.*)$/i)) { // fix "ipfs://ipfs/.."
-		return `ipfs://${match[1]}`;
+	static from_bytes(v) {
+		if (!(v instanceof Uint8Array)) throw new TypeError(`expected Uint8Array`);
+		try {
+			if (v.length == 34 && v[0] == 0x12 && v[1] == 0x20) {
+				return new CIDv0(Multihash.from_bytes(v));
+			}
+			let version;
+			[version, v] = read_uvarint(v);
+			switch (version) {
+				case 1: {
+					let codec;
+					[codec, v] = read_uvarint(v);
+					return new CIDv1(codec, Multihash.from_bytes(v));
+				}
+				default: throw new Error(`unsupported version: ${version}`);
+			}
+		} catch (cause) {
+			throw new Error(`Malformed CID: ${cause}`, {cause});
+		}
 	}
-	/*
-	let match;
-	if ((match = s.match(/\/ipfs\/([1-9a-zA-Z]{32,})(\/?.*)$/)) && is_multihash(match[1])) {
-		s = `ipfs://${match[1]}${match[2]}`;
+	toJSON() {
+		return {
+			version: this.version,
+			codec: this.codec,
+			hash: this.hash
+		};
 	}
-	*/
-	return s;
 }
 
-// should this be here?
-// replace ipfs:// with default https://ipfs.io
-function replace_ipfs_protocol(s) {
-	return s.replace(/^ipfs:\/\//i, 'https://ipfs.io/ipfs/');
+class CIDv0 extends CID {
+	constructor(hash) {
+		super();
+		this.hash = hash;
+	}
+	get version() { return 0; }
+	get codec() { return 0x70; }
+	get length() {
+		return this.hash.bytes.length;
+	}
+	get bytes() {
+		return this.hash.bytes;
+	}
+	upgrade_v0() {
+		return new CIDv1(this.codec, this.hash);
+	}
+	toString(base) {
+		const BASE = 'Q';
+		if (base !== undefined && base !== BASE) throw new TypeError('expected base Q');
+		return encode_multibase(BASE, this.bytes, false);
+	}
+}
+
+class CIDv1 extends CID {
+	constructor(codec, hash) {
+		super();
+		this.codec = codec;
+		this.hash = hash;
+	}
+	get version() { return 1; }
+	get length() {
+		return sizeof_uvarint(this.version) + sizeof_uvarint(this.codec) + this.hash.length;
+	}
+	get bytes() {
+		let v = new Uint8Array(this.length);
+		let pos = 0;
+		pos = write_uvarint(v, this.version, pos);
+		pos = write_uvarint(v, this.codec, pos);
+		this.hash.write_bytes(v, pos);
+		return v;
+	}
+	upgrade_v0() {
+		return this;
+	}
+	toString(base) {
+		if (base === undefined) {
+			switch (this.codec) {
+				case 0x72: base = 'k'; break; // libp2p-key
+				default: base = 'b';
+			}
+		}
+		return encode_multibase(base, this.bytes, true);
+	}
 }
 
 function standardize_chain_id(x) {	
@@ -1120,9 +1418,13 @@ function make_smart(provider) {
 		}
 		return retry_request(provider.request.bind(provider), obj);
 	}
+	async function req(method, ...params) {
+		return request({method, params});
+	}
 	return new Proxy(provider, {
 		get: function(obj, prop) {		
 			switch (prop) {
+				case 'req': return req;
 				case 'request': return request;
 				case 'chain_id': return chain_id;
 				case 'source': return source;
@@ -1278,7 +1580,16 @@ class EventEmitter {
 	}
 }
 
-class WebSocketProvider extends EventEmitter {
+class BaseProvider extends EventEmitter {
+	get isSmartProvider() {
+		return true;
+	}
+	async req(method, ...params) { 
+		return this.request({method, params: [...params]}); 
+	}
+}
+
+class WebSocketProvider extends BaseProvider {
 	constructor({url, WebSocket: ws_api, source, request_timeout = 30000, idle_timeout = 60000}) {
 		if (typeof url !== 'string') throw new TypeError('expected url');
 		if (!ws_api) ws_api = globalThis.WebSocket;
@@ -1297,7 +1608,6 @@ class WebSocketProvider extends EventEmitter {
 		this._chain_id = undefined;
 		this._source = source;
 	}
-	get isSmartProvider() { return true; }
 	get source() {
 		return this._source ?? this.url;
 	}
@@ -1442,7 +1752,7 @@ class WebSocketProvider extends EventEmitter {
 	}
 }
 
-class FetchProvider extends EventEmitter {
+class FetchProvider extends BaseProvider {
 	constructor({url, fetch: fetch_api, source, request_timeout = 30000, idle_timeout = 60000}) {
 		if (typeof url !== 'string') throw new TypeError('expected url');
 		if (!fetch_api) {
@@ -1460,7 +1770,6 @@ class FetchProvider extends EventEmitter {
 		this._idle_timer = undefined;
 		this._source = source;
 	}
-	get isSmartProvider() { return true; }
 	get source() { return this._source ?? this.url; }
 	async request(obj) {
 		if (typeof obj !== 'object') throw new TypeError('expected object');
@@ -2605,15 +2914,8 @@ class ENS {
 		}
 	}
 	async get_eth_contract() {
-		let temp = this._dot_eth_contract;
-		if (typeof temp === 'string') return temp;
-		if (!temp) {
-			temp = this._dot_eth_contract = promise_queue(
-				this.resolve('eth').then(name => name.get_owner()).then(x => x.address),
-				address => this._dot_eth_contract = address
-			);
-		}
-		return temp();
+		if (this._dot_eth_contract !== undefined) return this._dot_eth_contract;
+		return promise_object_setter(this, '_dot_eth_contract', this.resolve('eth').then(name => name.get_owner()).then(x => x.address));
 	}
 	async is_dot_eth_available(label) {
 		return (await eth_call(
@@ -2645,15 +2947,11 @@ class ENSResolver {
 	}
 	async supports_interface(method) {
 		let key = hex_from_method(method);
-		let temp = this._interfaces[key];
-		if (typeof temp === 'boolean') return temp;
-		if (!temp) {
-			temp = this._interfaces = promise_queue(
-				supports_interface(await this.ens.get_provider(), this.address, method),
-				b => this._interfaces[key] = b
-			);
-		}
-		return temp();
+		let value = this._interfaces[key];
+		if (value !== undefined) return value;
+		return promise_object_setter(this._interfaces, key, this.ens.get_provider().then(p => {
+			return supports_interface(p, this.address, method);
+		}));
 	}
 	toJSON() {
 		return this.address;
@@ -2671,15 +2969,8 @@ class ENSOwner {
 		return this.address;
 	}
 	async get_primary_name() {
-		let temp = this._primary;
-		if (typeof temp === 'string' || temp === null) return temp;
-		if (!temp) {
-			temp = this._primary = promise_queue(
-				this.ens.primary_from_address(this.address),
-				address => this._primary = address
-			);
-		}
-		return temp();
+		if (this._primary !== undefined) return this._primary;
+		return promise_object_setter(this, '_primary', this.ens.primary_from_address(this.address));
 	}
 	async resolve() {
 		let name = await this.get_primary_name();
@@ -2723,10 +3014,9 @@ class ENSName {
 		return eth_call(await this.ens.get_provider(), this.resolver.address, ...args);
 	}
 	async get_address() {
-		let temp = this._address;
-		if (typeof temp === 'string') return temp;
-		if (!temp) {
-			this.assert_valid_resolver();
+		if (this._address !== undefined) return this._address;
+		this.assert_valid_resolver();
+		return promise_object_setter(this, '_address', (async () => {
 			// https://eips.ethereum.org/EIPS/eip-2304	
 			const METHOD = 'addr(bytes32,uint256)';
 			const METHOD_OLD = 'addr(bytes32)';
@@ -2740,28 +3030,19 @@ class ENSName {
 			} else {
 				throw new Error(`Resolver does not support addr`);
 			}
-			temp = this._address = promise_queue(p.then(v => {
-				if (v.length == 0) return NULL_ADDRESS;
-				if (v.length != 20) throw new Error(`Invalid ETH Address: expected 20 bytes`);
-				return standardize_address(hex_from_bytes(v));
-			}), s => this._address = s);
-		}
-		return temp();
+			let v = await p;
+			if (v.length == 0) return NULL_ADDRESS;
+			if (v.length != 20) throw new Error(`Invalid ETH Address: expected 20 bytes`);
+			return standardize_address(hex_from_bytes(v));
+		})());
 	}
 	async get_owner() {
-		let temp = this._owner;
-		if (temp instanceof ENSOwner) return temp;
-		if (!temp) {
-			temp = this._owner = promise_queue(
-				this.ens.call_registry(ABIEncoder.method('owner(bytes32)').number(this.node)).then(dec => {
-					return new ENSOwner(this.ens, dec.addr());
-				}).catch(cause => {
-					throw new Error(`Read owner failed: ${cause.message}`, {cause});
-				}),
-				owner => this._owner = owner
-			);
-		}
-		return temp();
+		if (this._owner !== undefined) return this._owner;
+		return promise_object_setter(this, '_owner', this.ens.call_registry(ABIEncoder.method('owner(bytes32)').number(this.node)).then(dec => {
+			return new ENSOwner(this.ens, dec.addr());
+		}).catch(cause => {
+			throw new Error(`Read owner failed: ${cause.message}`, {cause});
+		}));
 	}
 	async get_owner_address() { return (await this.get_owner()).address; }
 	async get_owner_primary_name() { return (await this.get_owner()).get_primary_name(); }	
@@ -2807,47 +3088,39 @@ class ENSName {
 	}
 	// this uses norm name if display name isn't set or invalid
 	async get_display_name() {
-		if (this._display) return this._display;
-		let display = await this.get_text('display');
-		return this._display = this.is_equivalent_name(display) ? display : this.name;
+		if (this._display !== undefined) return this._display;
+		return promise_object_setter(this, '_display', this.get_text('display').then(display => {
+			return this.is_equivalent_name(display) ? display : this.name
+		}));
 	}
 	async get_avatar() {
-		if (this._avatar) return this._avatar;
-		return this._avatar = await parse_avatar(
+		if (this._avatar !== undefined) return this._avatar;
+		return promise_object_setter(this, '_avatar', parse_avatar(
 			await this.get_text('avatar'), // throws
 			this.ens.providers,
 			await this.get_address()
-		);
+		));
 	}
 	// https://eips.ethereum.org/EIPS/eip-634
 	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/TextResolver.sol
 	async get_text(key) { 
 		if (typeof key !== 'string') throw new TypeError(`expected string`);
-		let temp = this._text[key];
-		if (typeof temp === 'string') return temp;
-		if (!temp) {
-			this.assert_valid_resolver();
+		let value = this._text[key];
+		if (value !== undefined) return value;
+		this.assert_valid_resolver();
+		return promise_object_setter(this._text, key, (async () => {
 			// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-634.md
 			const METHOD = 'text(bytes32,string)';
 			if (!await this.resolver.supports_interface(METHOD)) {
 				throw new Error(`Resolver does not support text`);
 			}
-			temp = this._text[key] = promise_queue(
-				this.call_resolver(ABIEncoder.method(METHOD).number(this.node).string(key)).then(x => {
-					return x.string();
-				}).catch(cause => {
-					throw new Error(`Error reading text ${key}: ${cause.message}`, {cause});
-				}),
-				s => {
-					if (typeof s === 'string') {
-						this._text[key] = s;
-					} else {
-						delete this._text[key];
-					}
-				}
-			);
-		}
-		return temp();
+			try {
+				let dec = await this.call_resolver(ABIEncoder.method(METHOD).number(this.node).string(key));
+				return dec.string();
+			} catch (cause) {
+				throw new Error(`Error reading text ${key}: ${cause.message}`, {cause});
+			}
+		})());
 	}
 	async get_texts(keys) {
 		if (keys === undefined) {
@@ -2863,30 +3136,21 @@ class ENSName {
 	// addrs are stored by type
 	async get_addr(addr) { 
 		let type = parse_addr_type(addr);
-		let temp = this._addr[type];
-		if (temp instanceof Uint8Array) return temp;
-		if (!temp) {
-			this.assert_valid_resolver();
+		let value = this._addr[type];
+		if (value !== undefined) return value;		
+		this.assert_valid_resolver();
+		return promise_object_setter(this._addr, type, (async () => {
 			const METHOD = 'addr(bytes32,uint256)';
 			if (!await this.resolver.supports_interface(METHOD)) {
 				throw new Error(`Resolver does not support text`);
 			}
-			temp = this._addr[type] = promise_queue(
-				this.call_resolver(ABIEncoder.method(METHOD).number(this.node).number(type)).then(dec => {
-					return dec.memory();
-				}).catch(cause => {
-					throw new Error(`Error reading addr ${format_addr_type(type, true)}: ${cause.message}`, {cause});
-				}),
-				v => {
-					if (v instanceof Uint8Array) {
-						this._addr[type] = v;
-					} else {
-						delete this._addr[type];
-					}
-				}
-			);
-		}
-		return temp();
+			try {
+				let dec = await this.call_resolver(ABIEncoder.method(METHOD).number(this.node).number(type));
+				return dec.memory();
+			} catch(cause) {
+				throw new Error(`Error reading addr ${format_addr_type(type, true)}: ${cause.message}`, {cause});
+			}
+		})());
 	}
 	async get_addrs(addrs, named = true) {
 		let types;
@@ -2903,58 +3167,72 @@ class ENSName {
 	// https://github.com/ethereum/EIPs/pull/619
 	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/PubkeyResolver.sol
 	async get_pubkey() {
-		let temp = this._pubkey;
-		if (typeof temp === 'object') return temp;
-		if (!temp) {
-			this.assert_valid_resolver();
-			temp = this._pubkey = promise_queue(
-				this.call_resolver(ABIEncoder.method('pubkey(bytes32)').number(this.node)).then(dec => {
-					return {x: dec.uint256(), y: dec.uint256()};
-				}).catch(cause => {
-					throw new Error(`Error reading pubkey: ${cause.message}`, {cause});
-				}),
-				pubkey => this._pubkey = pubkey
-			);
-		}
-		return temp();
+		if (this._pubkey !== undefined) return this._pubkey;
+		this.assert_valid_resolver();
+		return promise_object_setter(this, '_pubkey', (async () => {
+			try {
+				let dec = await this.call_resolver(ABIEncoder.method('pubkey(bytes32)').number(this.node));
+				return {x: dec.uint256(), y: dec.uint256()};
+			} catch(cause) {
+				throw new Error(`Error reading pubkey: ${cause.message}`, {cause});
+			}
+		})());
 	}
 	// https://eips.ethereum.org/EIPS/eip-1577
 	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/ContentHashResolver.sol
 	async get_content() {
-		let temp = this._content;
-		if (typeof temp === 'object') return temp;
-		if (!temp) {
-			this.assert_valid_resolver();
-			temp = this._content = promise_queue(
-				this.call_resolver(ABIEncoder.method('contenthash(bytes32)').number(this.node)).then(dec => {
-					return dec.memory();
-				}).then(hash => {
-					let content = {};
-					if (hash.length > 0) {
-						content.hash = hash;
-						try {
-							// https://github.com/multiformats/multicodec
-							let dec = new ABIDecoder(hash);
-							let protocol = dec.uvarint();
-							let cid_version = dec.uvarint();
-							let content_type = dec.uvarint();
-							// TODO: this needs fixed
-							// either remove or use CID dependancy
-							if (protocol == 0xE3 && cid_version == 0x1 && content_type == 0x70) {
-								content.url = `ipfs://${base58_from_bytes(dec.read_bytes(dec.remaining))}`;
-							}
-						} catch (ignored) {							
-						}
-					}
-					return content;
-				}).catch(cause => {
-					throw new Error(`Error reading content: ${cause.message}`, {cause});
-				}),
-				content => this._content = content
-			);
-		}
-		return temp();
+		if (this._content !== undefined) return this._content;
+		this.assert_valid_resolver();
+		return promise_object_setter(this, '_content', (async () => {
+			let hash;
+			try {
+				let dec = await this.call_resolver(ABIEncoder.method('contenthash(bytes32)').number(this.node));
+				hash = dec.memory();
+			} catch (cause) {
+				throw new Error(`Error reading content: ${cause.message}`, {cause});
+			}
+			if (hash.length == 0) return {};
+			let content = parse_content(hash);
+			content.hash = hash;
+			return content;
+		})());
 	}
+}
+
+// https://eips.ethereum.org/EIPS/eip-1577
+function parse_content(v) {
+	let protocol;
+	[protocol, v] = read_uvarint(v);
+	switch (protocol) {
+		case 0xE3: {
+			let ret = {type: 'ipfs', protocol};
+			try {
+				let cid = CID.from_bytes(v);
+				ret.cid = cid;
+				ret.url = `ipfs://${cid.toString()}`;				
+			} catch (err) {
+				ret.error = err;
+			}
+			return ret;
+		}		case 0xE5: {
+			let ret = {type: 'ipns', protocol};
+			try {
+				let cid = CID.from_bytes(v);
+				if (cid.version !== 1) {
+					throw new Error('invalid CID version');
+				}
+				if (cid.hash.code !== 0) { // identity
+					throw new Error('expected identity hash');
+				}				
+				ret.cid = cid;
+				ret.url = `ipns://${cid}`;
+			} catch (err) {
+				ret.error = err;
+			} 
+			return ret;
+		}
+		default: return {type: 'unknown', protocol};
+	}	
 }
 
 const AVATAR_TYPE_INVALID = 'invalid';
@@ -3035,9 +3313,9 @@ async function parse_avatar(avatar, provider, address) {
 				try {
 					let [balance, meta_uri] = await Promise.all([
 						is_valid_address(address) 
-							? eth_call(provider, contract, ABIEncoder.method('balanceOf(address,uint256)').addr(address).number(token)).then(x => x.number())
+							? eth_call(provider, contract, ABIEncoder.method('balanceOf(address,uint256)').addr(address).number(token)).then(dec => dec.number())
 							: -1,
-						eth_call(provider, contract, ABIEncoder.method('uri(uint256)').number(token)).then(x => x.string())
+						eth_call(provider, contract, ABIEncoder.method('uri(uint256)').number(token)).then(dec => dec.string())
 					]);
 					// The string format of the substituted hexadecimal ID MUST be lowercase alphanumeric: [0-9a-f] with no 0x prefix.
 					ret.meta_uri = meta_uri.replace('{id}', token.hex.slice(2)); 
@@ -3111,38 +3389,32 @@ class NFT {
 		return p.isProviderView ? p.get_provider() : p;
 	}
 	async get_type() {
-		let temp = this._type;
-		if (typeof temp === 'string') return temp;
-		if (!temp) {
-			if (this.address === '0xb47e3cd837dDF8e4c57F05d70Ab865de6e193BBB') {
-				return this._type = TYPE_CRYPTO_PUNK;
-			}
-			this._type = temp = promise_queue((async () => {
-					if (await this.supports('d9b67a26')) {
-						// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1155.md
-						return TYPE_1155;
-					} else if (!this.strict || await this.supports('80ac58cd')) {
-						// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-721.md
-						return TYPE_721;
-					} else if (await this.supports('d31b620d')) { 
-						/*console.log([
-							'name()', 
-							'symbol()', 
-							'totalSupply()', 
-							'balanceOf(address)', 
-							'ownerOf(uint256)', 
-							'approve(address,uint256)', 
-							'safeTransferFrom(address,address,uint256)'
-						].reduce((a, x) => a.xor(keccak().update(x).bytes), Uint256.zero()).hex.slice(0, 10));*/
-						return TYPE_721;
-					} else {
-						return TYPE_UNKNOWN;
-					}
-				})(), 
-				type => this._type = type
-			);
+		if (this._type !== undefined) return this._type;
+		if (this.address === '0xb47e3cd837dDF8e4c57F05d70Ab865de6e193BBB') {
+			return this._type = TYPE_CRYPTO_PUNK;
 		}
-		return temp();
+		return promise_object_setter(this, '_type', (async () => {
+			if (await this.supports('d9b67a26')) {
+				// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1155.md
+				return TYPE_1155;
+			} else if (!this.strict || await this.supports('80ac58cd')) {
+				// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-721.md
+				return TYPE_721;
+			} else if (await this.supports('d31b620d')) { 
+				/*console.log([
+					'name()', 
+					'symbol()', 
+					'totalSupply()', 
+					'balanceOf(address)', 
+					'ownerOf(uint256)', 
+					'approve(address,uint256)', 
+					'safeTransferFrom(address,address,uint256)'
+				].reduce((a, x) => a.xor(keccak().update(x).bytes), Uint256.zero()).hex.slice(0, 10));*/
+				return TYPE_721;
+			} else {
+				return TYPE_UNKNOWN;
+			}
+		})());
 	} 
 	async _uri_from_token(token) {
 		switch (await this.get_type()) {
@@ -3173,72 +3445,64 @@ class NFT {
 		let cache = this.token_uris;
 		if (!cache) return this._uri_from_token(token); // no cache
 		let key = token.hex;
-		let temp = cache[key];
-		if (typeof temp === 'string') return temp;
-		if (!temp) {
-			cache[key] = temp = promise_queue(
-				this._uri_from_token(token),
-				uri => {
-					if (typeof uri === 'string') {
-						cache[key] = uri;
-					} else {
-						delete cache[key];
-					}
-				}
-			);
-		}
-		return temp();
+		let value = cache[key];
+		if (value !== undefined) return value;
+		return promise_object_setter(cache, key, this._uri_from_token(token));
 	}
 	async get_name() {
-		let temp = this._name;
-		if (typeof temp === 'string') return temp;
-		if (!temp) {
+		if (this._name !== undefined) return this._name;
+		return promise_object_setter(this, '_name', (async () => {
 			switch (await this.get_type()) {
 				case TYPE_CRYPTO_PUNK:
 				case TYPE_721: {
-					this._name = temp = promise_queue(
-						this.call(ABIEncoder.method('name()')).then(x => x.string()),
-						name => this._name = name
-					);
-					break;
+					try {
+						let dec = await this.call(ABIEncoder.method('name()'));
+						return dec.string();
+					} catch (cause) {
+						throw new Error(`Error reading name: ${cause.message}`, {cause});
+					}
 				}
+				default: return ''; // unknown?
 			}
-		}
-		return temp();
+		})());
 	}
 	async get_supply() {
-		let temp = this._supply;
-		if (typeof temp === 'number') return temp;
-		if (!temp) {
+		if (this._supply !== undefined) this._supply;
+		return promise_object_setter(this, '_supply', (async () => {
 			switch (await this.get_type()) {
 				case TYPE_CRYPTO_PUNK:
 				case TYPE_721: {
-					this._supply = temp = promise_queue(
-						this.call(ABIEncoder.method('totalSupply()')).then(x => x.number()).catch(err => {
-							if (err.reverted) return NaN; // not ERC721Enumerable 
-							throw err;
-						}),
-						n => this._supply = n
-					);
-					break;
-				}				
-				default: {
-					// unknown supply
-					return this._supply = NaN;
+					try {
+						let dec = await this.call(ABIEncoder.method('totalSupply()'));
+						return dec.number();
+					} catch (cause) {
+						if (err.reverted) return NaN; // not ERC721Enumerable 
+						throw new Error(`Error reading supply: ${cause.message}`, {cause});
+					}
 				}
+				default: return NaN;
 			}
-		}
-		return temp();
+		})());
 	}
-	/*
-	async get_balance(token, owner) {
-		// this could cache
-
-	}
-	async _get_balance(token, owner) {
-
-	}
-	*/
 }
 
-export { ABIDecoder, ABIEncoder, ADDR_TYPES, Chain, ENS, ENSName, ENSOwner, ENSResolver, FetchProvider, NFT, NULL_ADDRESS, Providers, Uint256, WebSocketProvider, base58_from_bytes, bytes4_from_method, bytes_from_base58, bytes_from_hex, bytes_from_utf8, compare_arrays, data_uri_from_json, defined_chains, determine_window_provider, ensure_chain, eth_call, find_chain, fix_multihash_uri, format_addr_type, hex_from_bytes, hex_from_method, is_checksum_address, is_multihash, is_null_hex, is_valid_address, keccak, labelhash, labels_from_name, left_truncate_bytes, make_smart, namehash, parse_addr_type, parse_avatar, promise_queue, replace_ipfs_protocol, set_bytes_to_number, sha3, shake, short_address, standardize_address, standardize_chain_id, supports_interface, unsigned_from_bytes, utf8_from_bytes };
+function fix_multihash_uri(s) {
+	try {
+		Multihash.from_str(s);
+		return `ipfs://${s}`;
+	} catch (ignored) {
+	}
+	let match;
+	if (match = s.match(/^ipfs\:\/\/ipfs\/(.*)$/i)) { // fix "ipfs://ipfs/.."
+		return `ipfs://${match[1]}`;
+	}
+	/*
+	let match;
+	if ((match = s.match(/\/ipfs\/([1-9a-zA-Z]{32,})(\/?.*)$/)) && is_multihash(match[1])) {
+		s = `ipfs://${match[1]}${match[2]}`;
+	}
+	*/
+	return s;
+}
+
+export { ABIDecoder, ABIEncoder, ADDR_TYPES, BASE10, BASE16, BASE2, BASE32, BASE32_HEX, BASE36, BASE58_BTC, BASE64, BASE64_URL, BASE8, CID, CIDv0, CIDv1, Chain, ENS, ENSName, ENSOwner, ENSResolver, FetchProvider, NFT, NULL_ADDRESS, Providers, Uint256, WebSocketProvider, assert_uvarint, bytes4_from_method, bytes_from_hex, bytes_from_utf8, compare_arrays, data_uri_from_json, decode_multibase, defined_chains, determine_window_provider, encode_multibase, ensure_chain, eth_call, find_chain, fix_multihash_uri, format_addr_type, hex_from_bytes, hex_from_method, is_checksum_address, is_null_hex, is_valid_address, keccak, labelhash, labels_from_name, left_truncate_bytes, make_smart, namehash, parse_addr_type, parse_avatar, parse_content, promise_object_setter, read_uvarint, replace_ipfs_protocol, set_bytes_to_number, sha3, shake, short_address, sizeof_uvarint, standardize_address, standardize_chain_id, supports_interface, unsigned_from_bytes, utf8_from_bytes, write_uvarint };

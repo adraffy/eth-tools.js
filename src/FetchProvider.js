@@ -1,6 +1,6 @@
 import {retry_request} from './retry.js';
-import {EventEmitter} from './EventEmitter.js';
-export class FetchProvider extends EventEmitter {
+import {BaseProvider} from './BaseProvider.js';
+export class FetchProvider extends BaseProvider {
 	constructor({url, fetch: fetch_api, source, request_timeout = 30000, idle_timeout = 60000}) {
 		if (typeof url !== 'string') throw new TypeError('expected url');
 		if (!fetch_api) {
@@ -18,7 +18,6 @@ export class FetchProvider extends EventEmitter {
 		this._idle_timer = undefined;
 		this._source = source;
 	}
-	get isSmartProvider() { return true; }
 	get source() { return this._source ?? this.url; }
 	async request(obj) {
 		if (typeof obj !== 'object') throw new TypeError('expected object');

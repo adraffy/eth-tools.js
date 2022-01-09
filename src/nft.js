@@ -1,8 +1,8 @@
 import {ABIEncoder, Uint256} from './abi.js';
 import {eth_call, supports_interface} from './eth.js';
-import {promise_queue, data_uri_from_json} from './utils.js';
+import {promise_object_setter, data_uri_from_json} from './utils.js';
 import {standardize_address} from './address.js';
-import {fix_multihash_uri} from './multihash.js';
+import {Multihash} from './multihash.js';
 
 const TYPE_721 = 'ERC-721';
 const TYPE_1155 = 'ERC-1155';
@@ -34,38 +34,32 @@ export class NFT {
 		return p.isProviderView ? p.get_provider() : p;
 	}
 	async get_type() {
-		let temp = this._type;
-		if (typeof temp === 'string') return temp;
-		if (!temp) {
-			if (this.address === '0xb47e3cd837dDF8e4c57F05d70Ab865de6e193BBB') {
-				return this._type = TYPE_CRYPTO_PUNK;
-			}
-			this._type = temp = promise_queue((async () => {
-					if (await this.supports('d9b67a26')) {
-						// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1155.md
-						return TYPE_1155;
-					} else if (!this.strict || await this.supports('80ac58cd')) {
-						// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-721.md
-						return TYPE_721;
-					} else if (await this.supports('d31b620d')) { 
-						/*console.log([
-							'name()', 
-							'symbol()', 
-							'totalSupply()', 
-							'balanceOf(address)', 
-							'ownerOf(uint256)', 
-							'approve(address,uint256)', 
-							'safeTransferFrom(address,address,uint256)'
-						].reduce((a, x) => a.xor(keccak().update(x).bytes), Uint256.zero()).hex.slice(0, 10));*/
-						return TYPE_721;
-					} else {
-						return TYPE_UNKNOWN;
-					}
-				})(), 
-				type => this._type = type
-			);
+		if (this._type !== undefined) return this._type;
+		if (this.address === '0xb47e3cd837dDF8e4c57F05d70Ab865de6e193BBB') {
+			return this._type = TYPE_CRYPTO_PUNK;
 		}
-		return temp();
+		return promise_object_setter(this, '_type', (async () => {
+			if (await this.supports('d9b67a26')) {
+				// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1155.md
+				return TYPE_1155;
+			} else if (!this.strict || await this.supports('80ac58cd')) {
+				// https://github.com/ethereum/EIPs/blob/master/EIPS/eip-721.md
+				return TYPE_721;
+			} else if (await this.supports('d31b620d')) { 
+				/*console.log([
+					'name()', 
+					'symbol()', 
+					'totalSupply()', 
+					'balanceOf(address)', 
+					'ownerOf(uint256)', 
+					'approve(address,uint256)', 
+					'safeTransferFrom(address,address,uint256)'
+				].reduce((a, x) => a.xor(keccak().update(x).bytes), Uint256.zero()).hex.slice(0, 10));*/
+				return TYPE_721;
+			} else {
+				return TYPE_UNKNOWN;
+			}
+		})());
 	} 
 	async _uri_from_token(token) {
 		switch (await this.get_type()) {
@@ -96,70 +90,63 @@ export class NFT {
 		let cache = this.token_uris;
 		if (!cache) return this._uri_from_token(token); // no cache
 		let key = token.hex;
-		let temp = cache[key];
-		if (typeof temp === 'string') return temp;
-		if (!temp) {
-			cache[key] = temp = promise_queue(
-				this._uri_from_token(token),
-				uri => {
-					if (typeof uri === 'string') {
-						cache[key] = uri;
-					} else {
-						delete cache[key];
-					}
-				}
-			);
-		}
-		return temp();
+		let value = cache[key];
+		if (value !== undefined) return value;
+		return promise_object_setter(cache, key, this._uri_from_token(token));
 	}
 	async get_name() {
-		let temp = this._name;
-		if (typeof temp === 'string') return temp;
-		if (!temp) {
+		if (this._name !== undefined) return this._name;
+		return promise_object_setter(this, '_name', (async () => {
 			switch (await this.get_type()) {
 				case TYPE_CRYPTO_PUNK:
 				case TYPE_721: {
-					this._name = temp = promise_queue(
-						this.call(ABIEncoder.method('name()')).then(x => x.string()),
-						name => this._name = name
-					);
-					break;
+					try {
+						let dec = await this.call(ABIEncoder.method('name()'));
+						return dec.string();
+					} catch (cause) {
+						throw new Error(`Error reading name: ${cause.message}`, {cause});
+					}
 				}
+				default: return ''; // unknown?
 			}
-		}
-		return temp();
+		})());
 	}
 	async get_supply() {
-		let temp = this._supply;
-		if (typeof temp === 'number') return temp;
-		if (!temp) {
+		if (this._supply !== undefined) this._supply;
+		return promise_object_setter(this, '_supply', (async () => {
 			switch (await this.get_type()) {
 				case TYPE_CRYPTO_PUNK:
 				case TYPE_721: {
-					this._supply = temp = promise_queue(
-						this.call(ABIEncoder.method('totalSupply()')).then(x => x.number()).catch(err => {
-							if (err.reverted) return NaN; // not ERC721Enumerable 
-							throw err;
-						}),
-						n => this._supply = n
-					);
-					break;
-				}				
-				default: {
-					// unknown supply
-					return this._supply = NaN;
+					try {
+						let dec = await this.call(ABIEncoder.method('totalSupply()'));
+						return dec.number();
+					} catch (cause) {
+						if (err.reverted) return NaN; // not ERC721Enumerable 
+						throw new Error(`Error reading supply: ${cause.message}`, {cause});
+					}
 				}
+				default: return NaN;
 			}
-		}
-		return temp();
+		})());
+	}
+}
+
+export function fix_multihash_uri(s) {
+	try {
+		Multihash.from_str(s);
+		return `ipfs://${s}`;
+	} catch (ignored) {
+	}
+	let match;
+	if (match = s.match(/^ipfs\:\/\/ipfs\/(.*)$/i)) { // fix "ipfs://ipfs/.."
+		return `ipfs://${match[1]}`;
 	}
 	/*
-	async get_balance(token, owner) {
-		// this could cache
-
-	}
-	async _get_balance(token, owner) {
-
+	let match;
+	if ((match = s.match(/\/ipfs\/([1-9a-zA-Z]{32,})(\/?.*)$/)) && is_multihash(match[1])) {
+		s = `ipfs://${match[1]}${match[2]}`;
 	}
 	*/
+	return s;
 }
+

@@ -32,3 +32,5 @@ await provider.request({method: 'eth_subscribe', params: ['newHeads']}).then(sub
 }));
 console.log('Should disconnect soon');
 
+console.log(await provider.request({method: 'eth_getBlockByNumber', params: ['latest', false]}));
+

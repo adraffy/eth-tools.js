@@ -1,7 +1,8 @@
 import {
-	base58_from_bytes, bytes_from_base58, 
+	BASE58_BTC,
 	bytes_from_utf8, 
-	bytes_from_hex, hex_from_bytes
+	bytes_from_hex,
+	hex_from_bytes
 } from '../index.js';
 
 let KNOWN = [
@@ -10,12 +11,15 @@ let KNOWN = [
 	[bytes_from_hex('0x0000287fb4cd'), '11233QC4']
 ];
 
-for (let [input, output] of KNOWN) {
-	if (base58_from_bytes(input) !== output) {
+for (let [input, expect] of KNOWN) {
+	let result = BASE58_BTC.str_from_bytes(input);
+	if (result !== expect) {
+		console.log({result, expect})
 		throw new Error('wtf');
 	}
-	if (hex_from_bytes(bytes_from_base58(output)) !== hex_from_bytes(input)) {
-		console.log([bytes_from_base58(output), input]);
+	let v = BASE58_BTC.bytes_from_str(expect);
+	if (hex_from_bytes(v) !== hex_from_bytes(input)) {
+		console.log([v, input]);
 		throw new Error('wtf');
 	}
 }

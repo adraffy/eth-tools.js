@@ -12,10 +12,10 @@ export function standardize_address(s, checksum = true) {
 	if (!/^[a-f0-9]{40}$/.test(lower)) throw new TypeError('expected 40-char hex');
 	let ret = lower;
 	if (checksum && !/^[0-9]+$/.test(ret)) { 
-		let upper = s.toUpperCase();
 		let hash = keccak().update(lower).hex;
 		ret = [...lower].map((x, i) => hash.charCodeAt(i) >= 56 ? x.toUpperCase() : x).join('');
-		if (s !== ret && s !== lower && s !== upper) {
+		// dont enforce checksum on full lower/upper case
+		if (s !== ret && s !== lower && s !== lower.toLowerCase()) {
 			throw new Error(`checksum failed: ${s}`);
 		}
 	}
