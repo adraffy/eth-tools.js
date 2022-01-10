@@ -1,5 +1,6 @@
 for (let test of [
 	'abi',
+	'bech32',
 	'chains',
 	'cid',
 	'ens',
@@ -9,7 +10,9 @@ for (let test of [
 	'nft',
 	'providers',
 	'readme',
-	'root',
+	//'root',
+	'segwit',
+	'sha256',
 	'Uint256',
 	'utils',
 	'uvarint',

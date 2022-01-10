@@ -12,7 +12,7 @@ function hex_from_bytes(v) {
 }
 // accepts hex-string, 0x-prefix is optional
 // returns Uint8Array
-function bytes_from_hex(s) {
+function bytes_from_hex$1(s) {
 	if (typeof s !== 'string') throw TypeError('expected string');
 	if (s.startsWith('0x')) s = s.slice(2); // optional prefix
 	if (s.length & 1) {
@@ -471,7 +471,7 @@ class Uint256 {
 		return s.startsWith('0x') ? this.from_hex(s) : this.from_dec(s);
 	}
 	static from_hex(s) {
-		return this.from_bytes(bytes_from_hex(s));
+		return this.from_bytes(bytes_from_hex$1(s));
 	}
 	static from_dec(s) {
 		if (!/^[0-9]+$/.test(s)) throw new TypeError(`expected decimal digits: ${s}`);
@@ -645,7 +645,7 @@ function left_truncate_bytes(v, n, copy_when_same = true) {
 }
 
 class ABIDecoder {
-	static from_hex(x) { return new this(bytes_from_hex(x)); }
+	static from_hex(x) { return new this(bytes_from_hex$1(x)); }
 	constructor(buf) {
 		this.buf = buf;
 		this.pos = 0;
@@ -727,7 +727,7 @@ function bytes4_from_method(x) {
 		return v.slice();
 	}
 	try {
-		let v = x instanceof Uint8Array ? x : bytes_from_hex(x);
+		let v = x instanceof Uint8Array ? x : bytes_from_hex$1(x);
 		if (v.length != 4) throw new Error('expected 4 bytes');
 		return v;
 	} catch (err) {
@@ -781,7 +781,7 @@ class ABIEncoder {
 		this.pos = end;
 		return buf.subarray(pos, end);
 	}
-	bytes_hex(s) { return this.bytes(bytes_from_hex(s)); }
+	bytes_hex(s) { return this.bytes(bytes_from_hex$1(s)); }
 	bytes(v) { 
 		this.alloc((v.length + 31) & ~31).set(v);		
 		return this; // chainable
@@ -810,13 +810,13 @@ class ABIEncoder {
 		return this; // chainable
 	}
 	addr(s) {
-		let v = bytes_from_hex(s); // throws
+		let v = bytes_from_hex$1(s); // throws
 		if (v.length != 20) throw new TypeError('expected address');
 		this.alloc(32).set(v, 12);
 		return this; // chainable
 	}
 	// these are dangerous
-	add_hex(s) { return this.add_bytes(bytes_from_hex(s)); } // throws
+	add_hex(s) { return this.add_bytes(bytes_from_hex$1(s)); } // throws
 	add_bytes(v) {
 		if (!(v instanceof Uint8Array)) {
 			if (v instanceof ArrayBuffer) { 
@@ -832,12 +832,52 @@ class ABIEncoder {
 	}
 }
 
-// the choice of bases in multibase spec are shit
-// why are there strings that aren't valid bases???
-// why isn't this just encoded as an integer???
+class Coder {
+	bytes_from_str(s) {
+		if (typeof s !== 'string') throw new TypeError('expected string');
+		return this.bytes(s);
+	}
+	str_from_bytes(v) {
+		if (Array.isArray(v)) v = Uint8Array.from(v);
+		if (!(v instanceof Uint8Array)) throw new TypeError('expected bytes');
+		return this.str(v);
+	}
+	// overriden by subclasses
+	bytes() { throw new TypeError('bug: not implemented'); }
+	str() { throw new TypeError('bug: not implemented'); }
+}
 
-class Lookup {
+class MapStringCoder extends Coder {
+	constructor(coder, fn) {
+		super();
+		this.coder = coder;
+		this.fn = fn;
+	}
+	bytes(s) {
+		return this.coder.bytes(this.fn(s, true));
+	}
+	str(v) {
+		return this.fn(this.coder.str(v), false);
+	}
+}
+
+class MapBytesCoder extends Coder {
+	constructor(coder, fn) {
+		super();
+		this.coder = coder;
+		this.fn = fn;
+	}
+	bytes(s) {
+		return this.fn(this.coder.bytes(s, true));
+	}
+	str(v) {
+		return this.coder.str(this.fn(v, false));
+	}
+}
+
+class BaseCoder extends Coder {
 	constructor(lookup) {
+		super();
 		let v = [...lookup];
 		if (v.length !== lookup.length) throw new TypeError(`expected UTF16`);
 		this.lookup = lookup;
@@ -848,10 +888,41 @@ class Lookup {
 		if (i === undefined) throw new TypeError(`invalid digit ${s}`);
 		return i;
 	}
+	format(v) {
+		return v.reduce((s, x) => s + this.lookup[x], '');
+	}
 }
 
-class Prefix0 extends Lookup {
-	bytes_from_str(s) {
+// https://github.com/Chia-Network/chia-blockchain/blob/af0d6385b238c91bff4fec1a9e9c0f6158fbf896/chia/util/bech32m.py#L85
+function convert_bits(v, src_bits, dst_bits, pad) {
+	if (!Array.isArray(v) && !ArrayBuffer.isView(v)) throw new TypeError('expected array');
+	if (!Number.isSafeInteger(src_bits) || src_bits < 1 || src_bits > 32) throw new TypeError('invalid from bits');
+	if (!Number.isSafeInteger(dst_bits) || dst_bits < 1 || dst_bits > 32) throw new TypeError('invalid to bits');
+	let acc = 0;
+	let bits = 0;
+	let ret = [];
+	let mask = (1 << dst_bits) - 1;
+	for (let x of v) {
+		if (x < 0 || (x >> src_bits) !== 0) throw new Error('invalid digit');
+		acc = (acc << src_bits) | x;
+		bits += src_bits;
+		while (bits >= dst_bits) {
+			bits -= dst_bits;
+			ret.push((acc >> bits) & mask);
+		}
+	}
+	if (pad) {
+		if (bits > 0) {
+			ret.push((acc << (dst_bits - bits)) & mask);
+		}
+	} else if (bits >= src_bits || ((acc << (dst_bits - bits)) & mask)) {
+		throw new Error('malformed');
+	}
+	return Uint8Array.from(ret);
+}
+
+class Prefix0 extends BaseCoder {
+	bytes(s) {
 		let {lookup} = this;
 		let base = lookup.length;
 		let n = s.length;
@@ -872,7 +943,7 @@ class Prefix0 extends Lookup {
 		for (let i = 0; i < n && s[i] === lookup[0]; i++) pos++;
 		return v.subarray(0, pos).reverse();
 	}
-	str_from_bytes(v) {
+	str(v) {
 		let base = this.lookup.length;
 		let u = [];
 		for (let x of v) {
@@ -887,16 +958,16 @@ class Prefix0 extends Lookup {
 			}
 		}	
 		for (let i = 0; i < v.length && v[i] == 0; i++) u.push(0);
-		return u.reverse().map(x => this.lookup[x]).join('');
+		return this.format(u.reverse());
 	}
 }
 
-class RFC4648 extends Lookup {
+class RFC4648 extends BaseCoder {
 	constructor(lookup, w) {
 		super(lookup);
 		this.w = w;
 	}
-	bytes_from_str(s, pad) {
+	bytes(s, pad) {
 		let {w} = this;
 		let n = s.length;
 		let pos = 0;
@@ -916,7 +987,7 @@ class RFC4648 extends Lookup {
 		if ((carry << (8 - width)) & 0xFF) throw new Error('wtf');
 		return v;
 	}
-	str_from_bytes(v, pad) {
+	str(v, pad) {
 		let {w, lookup} = this;
 		let mask = (1 << w) - 1;
 		let carry = 0;
@@ -938,6 +1009,12 @@ class RFC4648 extends Lookup {
 	}
 }
 
+const Base58BTC = new Prefix0('123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz');
+
+// the choice of bases in multibase spec are shit
+// why are there strings that aren't valid bases???
+// why isn't this just encoded as an integer???
+
 /*
 export const BASE64_JS = {
 	bytes_from_str(s) {
@@ -952,60 +1029,58 @@ export const BASE64_JS = {
 // https://www.rfc-editor.org/rfc/rfc4648.html#section-4 
 const ALPHA = 'abcdefghijklmnopqrstuvwxyz';
 const RADIX = '0123456789' + ALPHA;
-const BASE64 = new RFC4648(ALPHA.toUpperCase() + ALPHA + RADIX.slice(0, 10) + '+=', 6);
+const Base64 = new RFC4648(ALPHA.toUpperCase() + ALPHA + RADIX.slice(0, 10) + '+=', 6);
 // https://www.rfc-editor.org/rfc/rfc4648.html#section-5
-const BASE64_URL = new RFC4648(ALPHA.toUpperCase() + ALPHA + RADIX.slice(0, 10) + '-_', 6);
-// https://tools.ietf.org/id/draft-msporny-base58-03.html 
-const BASE58_BTC = new Prefix0('123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz');
+const Base64URL = new RFC4648(ALPHA.toUpperCase() + ALPHA + RADIX.slice(0, 10) + '-_', 6);
 // https://github.com/multiformats/multibase/blob/master/rfcs/Base36.md
-const BASE36 = new Prefix0(RADIX);
+const Base36 = new Prefix0(RADIX);
 // https://www.rfc-editor.org/rfc/rfc4648.html#section-7
-const BASE32_HEX = new RFC4648(RADIX.slice(0, 32), 5);
+const Base32Hex = new RFC4648(RADIX.slice(0, 32), 5);
 // https://www.rfc-editor.org/rfc/rfc4648.html#section-6
-const BASE32 = new RFC4648('abcdefghijklmnopqrstuvwxyz234567', 5);
+const Base32 = new RFC4648('abcdefghijklmnopqrstuvwxyz234567', 5);
 // https://www.rfc-editor.org/rfc/rfc4648.html#section-8
-const BASE16 = new RFC4648(RADIX.slice(0, 16), 4);
+const Base16 = new RFC4648(RADIX.slice(0, 16), 4);
 // https://github.com/multiformats/multibase/blob/master/rfcs/Base10.md
-const BASE10 = new Prefix0(RADIX.slice(0, 10)); 
+const Base10 = new Prefix0(RADIX.slice(0, 10)); 
 // https://github.com/multiformats/multibase/blob/master/rfcs/Base8.md
-const BASE8 = new RFC4648(RADIX.slice(0, 8), 3);
+const Base8 = new RFC4648(RADIX.slice(0, 8), 3);
 // https://github.com/multiformats/multibase/blob/master/rfcs/Base2.md
-const BASE2 = new RFC4648(RADIX.slice(0, 2), 1);
+const Base2 = new RFC4648(RADIX.slice(0, 2), 1);
 
 function bind(base, ...a) {
 	return {
-		decode: s => base.bytes_from_str(s, ...a),
+		decode: s => base.bytes(s, ...a), // we already know it's a string
 		encode: v => base.str_from_bytes(v, ...a)
 	};
 }
 
 // https://github.com/multiformats/multibase#multibase-table  
 const MULTIBASES = {
-	'0': {...bind(BASE2), name: 'base2'},
-	'7': {...bind(BASE8), name: 'base8'},
-	'9': {...bind(BASE10), name: 'base10'},
-	'f': {...bind(BASE16), case: false, name: 'base16'},
-	'F': {...bind(BASE16), case: true, name: 'base16upper'},
-	'v': {...bind(BASE32_HEX), case: false, name: 'base32hex'},
-	'V': {...bind(BASE32_HEX), case: true, name: 'base32hexupper'},
-	't': {...bind(BASE32_HEX, true), case: false, name: 'base32hexpad'},
-	'T': {...bind(BASE32_HEX, true), case: true, name: 'base32hexpadupper'},
-	'b': {...bind(BASE32), case: false,name: 'base32'},
-	'B': {...bind(BASE32), case: true, name: 'base32upper'},
-	'c': {...bind(BASE32, true), case: false,name: 'base32pad'},
-	'C': {...bind(BASE32, true), case: true, name: 'base32padupper'},
+	'0': {...bind(Base2), name: 'base2'},
+	'7': {...bind(Base8), name: 'base8'},
+	'9': {...bind(Base10), name: 'base10'},
+	'f': {...bind(Base16), case: false, name: 'base16'},
+	'F': {...bind(Base16), case: true, name: 'base16upper'},
+	'v': {...bind(Base32Hex), case: false, name: 'base32hex'},
+	'V': {...bind(Base32Hex), case: true, name: 'base32hexupper'},
+	't': {...bind(Base32Hex, true), case: false, name: 'base32hexpad'},
+	'T': {...bind(Base32Hex, true), case: true, name: 'base32hexpadupper'},
+	'b': {...bind(Base32), case: false,name: 'base32'},
+	'B': {...bind(Base32), case: true, name: 'base32upper'},
+	'c': {...bind(Base32, true), case: false,name: 'base32pad'},
+	'C': {...bind(Base32, true), case: true, name: 'base32padupper'},
 	// h
-	'k': {...bind(BASE36), case: false,name: 'base36'},
-	'K': {...bind(BASE36), case: true, name: 'base36upper'},
-	'z': {...bind(BASE58_BTC), name: 'base58btc'},
-	// Z
-	'm': {...bind(BASE64), name: 'base64'},
-	'M': {...bind(BASE64, true), name: 'base64pad'},
-	'u': {...bind(BASE64_URL), name: 'base64url'},
-	'U': {...bind(BASE64_URL, true), name: 'base64urlpad'},
+	'k': {...bind(Base36), case: false,name: 'base36'},
+	'K': {...bind(Base36), case: true, name: 'base36upper'},
+	'z': {...bind(Base58BTC), name: 'base58btc'},
+	// ZBase58BTC
+	'm': {...bind(Base64), name: 'base64'},
+	'M': {...bind(Base64, true), name: 'base64pad'},
+	'u': {...bind(Base64URL), name: 'base64url'},
+	'U': {...bind(Base64URL, true), name: 'base64urlpad'},
 	// p
-	'1': {...bind(BASE58_BTC), name: 'base58btc-Identity'},
-	'Q': {...bind(BASE58_BTC), name: 'base58btc-CIDv0'},
+	'1': {...bind(Base58BTC), name: 'base58btc-Identity'},
+	'Q': {...bind(Base58BTC), name: 'base58btc-CIDv0'},
 };
 for (let [k, v] of Object.entries(MULTIBASES)) {
 	v.prefix = k;
@@ -1019,7 +1094,7 @@ function decode_multibase(s, prefix) {
 		s = s.slice(1);
 	}
 	let mb = MULTIBASES[prefix];
-	if (!mb) throw new Error(`Unknown multihash: ${prefix}`);	
+	if (!mb) throw new Error(`Unknown multibase: ${prefix}`);	
 	if (mb.case !== undefined) s = s.toLowerCase();
 	return mb.decode(s);
 }
@@ -1028,7 +1103,7 @@ function encode_multibase(prefix, v, prefixed = true) {
 	let mb = MULTIBASES[prefix];
 	if (!mb) throw new Error(`Unknown multibase: ${prefix}`);
 	let s = mb.encode(v);
-	if (mb.upper) s = s.toUpperCase();
+	if (mb.case) s = s.toUpperCase();
 	if (prefixed) s = mb.prefix + s; 
 	return s;
 }
@@ -1143,7 +1218,7 @@ class CID {
 	static from_str(s) {
 		if (typeof s !== 'string') throw new TypeError('expected string');
 		if (s.length == 46 && s.startsWith('Qm')) {
-			return this.from_bytes(BASE58_BTC.bytes_from_str(s));
+			return this.from_bytes(Base58BTC.bytes_from_str(s));
 		} else {
 			let v = decode_multibase(s);
 			if (v[0] == 0x12) throw new Error(`CIDv0 cannot be multibase: ${s}`);
@@ -1233,6 +1308,380 @@ class CIDv1 extends CID {
 		return encode_multibase(base, this.bytes, true);
 	}
 }
+
+// https://github.com/bitcoin/bips/blob/master/bip-0350.mediawiki
+
+const BECH32 = new BaseCoder('qpzry9x8gf2tvdw0s3jn54khce6mua7l', 5);
+const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+const SEP = '1';
+
+function polymod(v, check = 1) {
+	for (let x of v) {
+		let digit = check >> 25;
+		check = (check & 0x1FFFFFF) << 5 ^ x;
+		for (let i = 0; i < 5; i++) {
+			if ((digit >> i) & 1) {
+				check ^= GEN[i];
+			}
+		}
+	}
+	return check;
+}
+
+function hrp_expand(s) {
+	let n = s.length;
+	let v = Array(n);
+	v.push(0);
+	for (let i = 0; i < n; i++) {
+		let c = s.charCodeAt(i);
+		if (c < 33 || c > 126) throw new Error(`invalid hrp character: ${c}`);
+		v[i] = c >> 5;
+		v.push(c & 31);
+	}
+	return v;
+}
+
+class Bech32Coder extends Coder {
+	constructor(type, hrp) {
+		Bech32.assert_hrp(hrp);
+		super();
+		this.type = type;
+		this.hrp = hrp;
+	}
+	bytes(s) {
+		let bech = Bech32.from_str(s);
+		if (bech.type != this.type) throw new Error('expected ')
+		if (bech.hrp !== this.hrp) throw new Error('invalid hrp');
+		return Bech32.bytes_from_digits(bech.digits);
+	}
+	str(v) {
+		return new Bech32(this.type, this.hrp, Bech32.digits_from_bytes(v)).toString();
+	}
+}
+
+class Bech32 {
+	static TYPE_1 = 1;
+	static TYPE_M = 0x2bc830a3;
+	static assert_type(type) {
+		switch (type) {
+			case this.TYPE_1:
+			case this.TYPE_M: break;
+			default: throw new TypeError(`unknown bech32 type: ${type}`);
+		}
+	}
+	static assert_hrp(hrp) {
+		if (typeof hrp !== 'string' || !hrp || hrp !== hrp.toLowerCase()) {
+			throw new TypeError(`expected lower-case hrp`);
+		}
+	}
+	static bytes_from_digits(v) {
+		return convert_bits(v, 5, 8, false);
+	}
+	static digits_from_bytes(v) {
+		return convert_bits(v, 8, 5, true);
+	}
+	static from_str(s) {
+		if (typeof s !== 'string') throw new TypeError('expected string');
+		try {
+			if (s.length > 90) throw new Error('too long');
+			let lower = s.toLowerCase();
+			if (s !== lower && s !== s.toUpperCase()) throw new Error('mixed case');
+			let pos = lower.lastIndexOf(SEP);
+			if (pos < 1) throw new Error('expected hrp');
+			if (lower.length - (pos+1) < 6) throw new Error('expected checksum');
+			let hrp = lower.slice(0, pos);
+			let v = Uint8Array.from([...lower.slice(pos + 1)].map(x => BECH32.parse(x)));
+			return new this(polymod(v, polymod(hrp_expand(hrp))), hrp, v.slice(0, -6));
+		} catch (cause) {
+			throw new Error(`Invalid Bech32: ${cause.message}`, {cause});
+		}
+	}
+	constructor(type, hrp, digits) {
+		this.constructor.assert_type(type);
+		this.constructor.assert_hrp(hrp);
+		if (!(digits instanceof Uint8Array)) throw new TypeError('expected Uint8Array');
+		this.type = type;
+		this.hrp = hrp;
+		this.digits = digits; // base-32
+	} 
+	toString() {
+		let {hrp, digits} = this;
+		let v = [0,0,0,0,0,0];
+		let check = polymod(v, polymod(digits, polymod(hrp_expand(hrp)))) ^ this.type;
+		for (let i = 0; i < v.length; i++) {
+			v[i] = (check >> 5 * (5 - i)) & 31;
+		}
+		return this.hrp + SEP + BECH32.format(digits) + BECH32.format(v);
+	}
+}
+
+const VERSION_OFFSET = 0x50;
+const VERSION_MAX = 0x10;
+
+class SegwitCoder extends Coder {
+	constructor(hrp) {
+		Bech32.assert_hrp(hrp);
+		super();
+		this.hrp = hrp;
+	}
+	str(v) {
+		return Segwit.from_bytes(this.hrp, v).toString();
+	}
+	bytes(s) {
+		let segwit = Segwit.from_str(s);
+		if (segwit.hrp !== this.hrp) throw new Error('invalid hrp');
+		return segwit.bytes;
+	}
+}
+
+class Segwit {
+	static from_bech32(bech) {
+		if (!(bech instanceof Bech32)) throw new TypeError('expected bech32');
+		if (bech.digits.length < 1) throw new Error('no digits');
+		let version = bech.digits[0];
+		if (version > VERSION_MAX) throw new Error(`invalid version: ${version}`);
+		let v = Bech32.bytes_from_digits(bech.digits.slice(1));
+		if (version == 0) {
+			if (v.length != 20 && v.length != 32) throw new Error('invalid length');
+			if (bech.type !== Bech32.TYPE_1) throw new Error('expected Bech32');
+		} else {
+			if (bech.type !== Bech32.TYPE_M) throw new Error('expected Bech32m');
+		}
+		return new this(bech.hrp, version, v);
+	}
+	static from_str(s) { 
+		try {
+			return this.from_bech32(Bech32.from_str(s)); 
+		} catch (cause) {
+			throw new Error(`Invalid segwit string: ${cause.message}`, {cause});
+		}
+	}
+	static from_bytes(hrp, v) {
+		if (!(v instanceof Uint8Array)) throw new TypeError('expected bytes');
+		Bech32.assert_hrp(hrp);
+		try {
+			let version = v[0];
+			if (version > VERSION_OFFSET) version -= VERSION_OFFSET;
+			if (version > VERSION_MAX) throw new Error(`invalid version: ${version}`);
+			if (v.length !== v[1] + 2) throw new Error(`invalid length`);
+			return new this(hrp, version, v.slice(2));
+		} catch (cause) {
+			throw new Error(`Invalid segwit bytes: ${cause.message}`, {cause});
+		}
+	}
+	constructor(hrp, version, program) {
+		this.hrp = hrp;
+		this.version = version;
+		this.program = program;
+	}
+	get bytes() {
+		let {version, program} = this;
+		let v = new Uint8Array(2 + program.length);
+		v[0] = version > 0 ? version + VERSION_OFFSET : version;
+		v[1] = program.length;
+		v.set(program, 2);
+		return v;
+	}
+	get bech32() {
+		let {hrp, version, program} = this;
+		let u = Bech32.digits_from_bytes(program);
+		let v = new Uint8Array(1 + u.length);
+		v[0] = version;
+		v.set(u, 1);
+		return new Bech32(version == 0 ? Bech32.TYPE_1 : Bech32.TYPE_M, hrp, v);
+	}
+	toString() {
+		return this.bech32.toString();
+	}
+}
+
+function sha256() { return new SHA256(); }
+
+class SHA256 {
+	constructor() {
+		this.words = Array(64);
+		this.block = undefined;
+		this.index = 0;
+		this.wrote = 0;
+		this.state = Int32Array.of(0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19);
+	}
+	update(v) {
+		if (!(v instanceof Uint8Array)) {
+			if (v instanceof ArrayBuffer) { 
+				v = new Uint8Array(v);
+			} else if (Array.isArray(v)) { 
+				v = Uint8Array.from(v);
+			} else if (typeof v === 'string') {
+				let s;
+				try {
+					s = unescape(encodeURIComponent(v));
+				} catch (cause) {
+					throw new Error('malformed utf8', {cause});
+				}
+				let n = s.length;
+				v = new Uint8Array(n);
+				for (let i = 0; i < n; i++) {
+					v[i] = s.charCodeAt(i);
+				}
+			} else {
+				throw new TypeError('expected bytes');
+			}
+		}
+		let {block, index, wrote} = this;
+		if (wrote < 0) throw new Error('already finalized');
+		let n = v.length;
+		this.wrote = wrote + n;
+		while (true) {		
+			let w = 64 - index;
+			if (n < w) break;
+			if (index == 0) {
+				this._update(v.subarray(0, w));
+			} else {
+				block.set(v.subarray(0, w), index);
+				this._update(block);
+			}
+			v = v.subarray(w);
+			n -= w;
+			index = 0;
+		}
+		if (n > 0) {
+			if (!block) this.block = block = new Uint8Array(64);
+			block.set(v, index);
+			index += n;
+		}
+		this.index = index;
+		return this;
+	}
+	get hex() { return [...this.bytes].map(x => x.toString(16).padStart(2, '0')).join(''); }
+	get bytes() {
+		if (this.wrote >= 0) {
+			let {block, index, wrote} = this;
+			if (!block) block = new Uint8Array(64);
+			block[index] = 0x80;
+			block.fill(0, index + 1);
+			if (index >= 56) { // 64-8
+				this._update(block);
+				block.fill(0);
+			}
+			wrote *= 8; // bits
+			let U = 0x100000000;
+			if (wrote >= U) {
+				let upper = (wrote / U)|0;
+				block[56] = upper >> 24;
+				block[57] = upper >> 16;
+				block[58] = upper >>  8;
+				block[59] = upper;
+			}
+			block[60] = wrote >> 24;
+			block[61] = wrote >> 16;
+			block[62] = wrote >>  8;
+			block[63] = wrote;
+			this._update(block);
+			this.wrote = -1; // mark as finalized
+		}
+		let v = new Uint8Array(32);
+		let {state} = this;
+		let pos = 0;
+		for (let x of state) {
+			v[pos++] = x >> 24;
+			v[pos++] = x >> 16;
+			v[pos++] = x >> 8;
+			v[pos++] = x;
+		}
+		return v;
+		//return new Uint8Array(this.state.buffer.slice());
+	}
+	_update(block) {
+		let {state, words} = this;
+		for (let i = 0; i < 64; i += 4) {
+			words[i>>2] = (block[i] << 24) | (block[i+1] << 16) | (block[i+2] << 8) | block[i+3];
+		}
+		for (let i = 16; i < 64; i++) {
+			words[i] = (gamma1(words[i - 2]) + words[i - 7] + gamma0(words[i - 15]) + words[i - 16]) | 0;
+		}
+		let [a, b, c, d, e, f, g, h] = state;
+		for (let i = 0; i < 64; i++) {
+			let T1 = (h + sigma1(e) + ch(e, f, g) + K[i] + words[i]) | 0;
+			let T2 = (sigma0(a) + maj(a, b, c)) | 0;
+			h = g;
+			g = f;
+			f = e;
+			e = (d + T1) | 0;
+			d = c;
+			c = b;
+			b = a;
+			a = (T1 + T2) | 0;
+		}
+		state[0] += a;
+		state[1] += b;
+		state[2] += c;
+		state[3] += d;
+		state[4] += e;
+		state[5] += f;
+		state[6] += g;
+		state[7] += h; 
+	}
+}
+ 
+function ch (x, y, z) {
+	return z ^ (x & (y ^ z))
+}
+function maj (x, y, z) {
+	return (x & y) | (z & (x | y))
+}
+function sigma0 (x) {
+	return (x >>> 2 | x << 30) ^ (x >>> 13 | x << 19) ^ (x >>> 22 | x << 10)
+}
+function sigma1 (x) {
+	return (x >>> 6 | x << 26) ^ (x >>> 11 | x << 21) ^ (x >>> 25 | x << 7)
+}
+function gamma0 (x) {
+	return (x >>> 7 | x << 25) ^ (x >>> 18 | x << 14) ^ (x >>> 3)
+}
+function gamma1 (x) {
+	return (x >>> 17 | x << 15) ^ (x >>> 19 | x << 13) ^ (x >>> 10)
+}
+const K = [
+	0x428A2F98, 0x71374491, 0xB5C0FBCF, 0xE9B5DBA5,
+	0x3956C25B, 0x59F111F1, 0x923F82A4, 0xAB1C5ED5,
+	0xD807AA98, 0x12835B01, 0x243185BE, 0x550C7DC3,
+	0x72BE5D74, 0x80DEB1FE, 0x9BDC06A7, 0xC19BF174,
+	0xE49B69C1, 0xEFBE4786, 0x0FC19DC6, 0x240CA1CC,
+	0x2DE92C6F, 0x4A7484AA, 0x5CB0A9DC, 0x76F988DA,
+	0x983E5152, 0xA831C66D, 0xB00327C8, 0xBF597FC7,
+	0xC6E00BF3, 0xD5A79147, 0x06CA6351, 0x14292967,
+	0x27B70A85, 0x2E1B2138, 0x4D2C6DFC, 0x53380D13,
+	0x650A7354, 0x766A0ABB, 0x81C2C92E, 0x92722C85,
+	0xA2BFE8A1, 0xA81A664B, 0xC24B8B70, 0xC76C51A3,
+	0xD192E819, 0xD6990624, 0xF40E3585, 0x106AA070,
+	0x19A4C116, 0x1E376C08, 0x2748774C, 0x34B0BCB5,
+	0x391C0CB3, 0x4ED8AA4A, 0x5B9CCA4F, 0x682E6FF3,
+	0x748F82EE, 0x78A5636F, 0x84C87814, 0x8CC70208,
+	0x90BEFFFA, 0xA4506CEB, 0xBEF9A3F7, 0xC67178F2
+];
+
+// https://en.bitcoin.it/wiki/Base58Check_encoding
+
+function checksum(v) { 
+	v = sha256().update(v).bytes;
+	v = sha256().update(v).bytes;
+	return v.slice(0, 4); 
+}
+
+class Base58Check extends Coder {
+	bytes(s) {
+		let v = Base58BTC.bytes_from_str(s);
+		if (v.length < 4) throw new Error('missing checksum');
+		let u = v.slice(0, -4);
+		if (!checksum(u).every((x, i) => x == v[u.length+i])) throw new Error('invalid checksum');
+		return u;
+	}
+	str(v) {
+		return Base58BTC.str_from_bytes([...v, ...checksum(Uint8Array.from(v))])
+	}
+}
+
+const X$1 = new Base58Check();
 
 function standardize_chain_id(x) {	
 	let id;
@@ -1881,897 +2330,82 @@ async function supports_interface(provider, contract, method) {
 	});
 }
 
-var ADDR_TYPES = {
-  "BTC": 0,
-  "LTC": 2,
-  "DOGE": 3,
-  "RDD": 4,
-  "DASH": 5,
-  "PPC": 6,
-  "NMC": 7,
-  "FTC": 8,
-  "XCP": 9,
-  "BLK": 10,
-  "NSR": 11,
-  "NBT": 12,
-  "MZC": 13,
-  "VIA": 14,
-  "XCH": 8444,
-  "RBY": 16,
-  "GRS": 17,
-  "DGC": 18,
-  "CCN": 828,
-  "DGB": 20,
-  "MONA": 22,
-  "CLAM": 23,
-  "XPM": 24,
-  "NEOS": 25,
-  "JBS": 26,
-  "ZRC": 27,
-  "VTC": 28,
-  "NXT": 29,
-  "BURST": 30,
-  "MUE": 31,
-  "ZOOM": 32,
-  "VASH": 33,
-  "CDN": 34,
-  "SDC": 35,
-  "PKB": 36,
-  "PND": 37,
-  "START": 38,
-  "MOIN": 39,
-  "EXP": 40,
-  "EMC2": 41,
-  "DCR": 42,
-  "XEM": 43,
-  "PART": 44,
-  "ARG": 45,
-  "SHR": 48,
-  "GCR": 49,
-  "NVC": 50,
-  "AC": 51,
-  "BTCD": 52,
-  "DOPE": 53,
-  "TPC": 54,
-  "AIB": 55,
-  "EDRC": 56,
-  "SYS": 57,
-  "SLR": 58,
-  "SMLY": 59,
-  "ETH": 60,
-  "ETC": 61,
-  "PSB": 62,
-  "LDCN": 63,
-  "XBC": 65,
-  "IOP": 66,
-  "NXS": 67,
-  "INSN": 68,
-  "OK": 69,
-  "BRIT": 70,
-  "CMP": 71,
-  "CRW": 72,
-  "BELA": 73,
-  "ICX": 74,
-  "FJC": 75,
-  "MIX": 76,
-  "XVG": 77,
-  "EFL": 78,
-  "CLUB": 79,
-  "RICHX": 80,
-  "POT": 81,
-  "QRK": 82,
-  "TRC": 83,
-  "GRC": 84,
-  "AUR": 85,
-  "IXC": 86,
-  "NLG": 87,
-  "BITB": 88,
-  "BTA": 1657,
-  "XMY": 90,
-  "BSD": 91,
-  "UNO": 92,
-  "MTR": 18000,
-  "GB": 94,
-  "SHM": 95,
-  "CRX": 96,
-  "BIQ": 97,
-  "EVO": 98,
-  "STO": 99,
-  "BIGUP": 100,
-  "GAME": 101,
-  "DLC": 102,
-  "ZYD": 103,
-  "DBIC": 104,
-  "STRAT": 105,
-  "SH": 106,
-  "MARS": 107,
-  "UBQ": 108,
-  "PTC": 109,
-  "NRO": 110,
-  "ARK": 111,
-  "USC": 112,
-  "THC": 113,
-  "LINX": 114,
-  "ECN": 115,
-  "DNR": 116,
-  "PINK": 117,
-  "ATOM": 118,
-  "PIVX": 119,
-  "FLASH": 120,
-  "ZEN": 121,
-  "PUT": 122,
-  "ZNY": 123,
-  "UNIFY": 124,
-  "XST": 125,
-  "BRK": 126,
-  "VC": 127,
-  "XMR": 128,
-  "VOX": 129,
-  "NAV": 130,
-  "FCT": 7777777,
-  "EC": 132,
-  "ZEC": 133,
-  "LSK": 134,
-  "STEEM": 135,
-  "XZC": 136,
-  "RBTC": 137,
-  "RPT": 139,
-  "LBC": 140,
-  "KMD": 141,
-  "BSQ": 142,
-  "RIC": 143,
-  "XRP": 144,
-  "BCH": 145,
-  "NEBL": 146,
-  "ZCL": 147,
-  "XLM": 148,
-  "NLC2": 149,
-  "WHL": 150,
-  "ERC": 151,
-  "DMD": 152,
-  "BTM": 153,
-  "BIO": 154,
-  "XWCC": 155,
-  "BTG": 156,
-  "BTC2X": 157,
-  "SSN": 158,
-  "TOA": 159,
-  "BTX": 160,
-  "ACC": 161,
-  "BCO": 5249353,
-  "ELLA": 163,
-  "PIRL": 164,
-  "XNO": 165,
-  "VIVO": 166,
-  "FRST": 167,
-  "HNC": 168,
-  "BUZZ": 169,
-  "MBRS": 170,
-  "HC": 171,
-  "HTML": 172,
-  "ODN": 173,
-  "ONX": 174,
-  "RVN": 175,
-  "GBX": 176,
-  "BTCZ": 177,
-  "POA": 178,
-  "NYC": 179,
-  "MXT": 180,
-  "WC": 181,
-  "MNX": 182,
-  "BTCP": 183,
-  "MUSIC": 184,
-  "BCA": 185,
-  "CRAVE": 186,
-  "STAK": 187,
-  "WBTC": 188,
-  "LCH": 189,
-  "EXCL": 190,
-  "LCC": 192,
-  "XFE": 193,
-  "EOS": 194,
-  "TRX": 195,
-  "KOBO": 196,
-  "HUSH": 197,
-  "BANANO": 198,
-  "ETF": 199,
-  "OMNI": 200,
-  "BIFI": 201,
-  "UFO": 202,
-  "CNMC": 203,
-  "BCN": 204,
-  "RIN": 205,
-  "ATP": 206,
-  "EVT": 207,
-  "ATN": 208,
-  "BIS": 209,
-  "NEET": 210,
-  "BOPO": 211,
-  "OOT": 212,
-  "ALIAS": 213,
-  "MONK": 842,
-  "BOXY": 215,
-  "FLO": 216,
-  "MEC": 217,
-  "BTDX": 218,
-  "XAX": 219,
-  "ANON": 220,
-  "LTZ": 221,
-  "BITG": 222,
-  "ICP": 223,
-  "SMART": 224,
-  "XUEZ": 225,
-  "HLM": 226,
-  "WEB": 227,
-  "ACM": 228,
-  "NOS": 229,
-  "BITC": 230,
-  "HTH": 231,
-  "TZC": 232,
-  "VAR": 233,
-  "IOV": 234,
-  "FIO": 235,
-  "BSV": 236,
-  "DXN": 237,
-  "QRL": 238,
-  "PCX": 239,
-  "LOKI": 240,
-  "NIM": 242,
-  "SOV": 243,
-  "JCT": 244,
-  "SLP": 245,
-  "EWT": 246,
-  "UC": 401,
-  "EXOS": 248,
-  "ECA": 249,
-  "SOOM": 250,
-  "XRD": 1022,
-  "FREE": 252,
-  "NPW": 253,
-  "BST": 254,
-  "NANO": 256,
-  "BTCC": 257,
-  "ZEST": 259,
-  "ABT": 260,
-  "PION": 261,
-  "DT3": 262,
-  "ZBUX": 263,
-  "KPL": 264,
-  "TPAY": 265,
-  "ZILLA": 266,
-  "ANK": 267,
-  "BCC": 268,
-  "HPB": 269,
-  "ONE": 1023,
-  "SBC": 271,
-  "IPC": 272,
-  "DMTC": 273,
-  "OGC": 274,
-  "SHIT": 275,
-  "ANDES": 276,
-  "AREPA": 277,
-  "BOLI": 278,
-  "RIL": 279,
-  "HTR": 280,
-  "FCTID": 281,
-  "BRAVO": 282,
-  "ALGO": 283,
-  "BZX": 284,
-  "GXX": 285,
-  "HEAT": 286,
-  "XDN": 287,
-  "FSN": 288,
-  "CPC": 337,
-  "BOLD": 290,
-  "IOST": 291,
-  "TKEY": 292,
-  "USE": 293,
-  "BCZ": 294,
-  "IOC": 295,
-  "ASF": 296,
-  "MASS": 297,
-  "FAIR": 298,
-  "NUKO": 299,
-  "GNX": 300,
-  "DIVI": 301,
-  "CMT": 1122,
-  "EUNO": 303,
-  "IOTX": 304,
-  "ONION": 305,
-  "8BIT": 306,
-  "ATC": 307,
-  "BTS": 308,
-  "CKB": 309,
-  "UGAS": 310,
-  "ADS": 311,
-  "ARA": 312,
-  "ZIL": 313,
-  "MOAC": 314,
-  "SWTC": 315,
-  "VNSC": 316,
-  "PLUG": 317,
-  "MAN": 318,
-  "ECC": 319,
-  "RPD": 320,
-  "RAP": 321,
-  "GARD": 322,
-  "ZER": 323,
-  "EBST": 324,
-  "SHARD": 325,
-  "LINDA": 326,
-  "CMM": 327,
-  "BLOCK": 328,
-  "AUDAX": 329,
-  "LUNA": 330,
-  "ZPM": 331,
-  "KUVA": 332,
-  "MEM": 333,
-  "CS": 498,
-  "SWIFT": 335,
-  "FIX": 336,
-  "VGO": 338,
-  "DVT": 339,
-  "N8V": 340,
-  "MTNS": 341,
-  "BLAST": 342,
-  "DCT": 343,
-  "AUX": 344,
-  "USDP": 345,
-  "HTDF": 346,
-  "YEC": 347,
-  "QLC": 348,
-  "TEA": 349,
-  "ARW": 350,
-  "MDM": 351,
-  "CYB": 352,
-  "LTO": 353,
-  "DOT": 354,
-  "AEON": 355,
-  "RES": 356,
-  "AYA": 357,
-  "DAPS": 358,
-  "CSC": 359,
-  "VSYS": 360,
-  "NOLLAR": 361,
-  "XNOS": 362,
-  "CPU": 363,
-  "LAMB": 364,
-  "VCT": 365,
-  "CZR": 366,
-  "ABBC": 367,
-  "HET": 368,
-  "XAS": 369,
-  "VDL": 370,
-  "MED": 371,
-  "ZVC": 372,
-  "VESTX": 373,
-  "DBT": 374,
-  "SEOS": 375,
-  "MXW": 376,
-  "ZNZ": 377,
-  "XCX": 378,
-  "SOX": 379,
-  "NYZO": 380,
-  "ULC": 381,
-  "RYO": 88888,
-  "KAL": 383,
-  "XSN": 384,
-  "DOGEC": 385,
-  "BMV": 386,
-  "QBC": 387,
-  "IMG": 388,
-  "QOS": 389,
-  "PKT": 390,
-  "LHD": 391,
-  "CENNZ": 392,
-  "HSN": 393,
-  "CRO": 394,
-  "UMBRU": 395,
-  "TON": 607,
-  "NEAR": 397,
-  "XPC": 398,
-  "ZOC": 399,
-  "NIX": 400,
-  "GALI": 402,
-  "OLT": 403,
-  "XBI": 404,
-  "DONU": 405,
-  "EARTHS": 406,
-  "HDD": 407,
-  "SUGAR": 408,
-  "AILE": 409,
-  "TENT": 410,
-  "TAN": 411,
-  "AIN": 412,
-  "MSR": 413,
-  "SUMO": 414,
-  "ETN": 415,
-  "BYTZ": 416,
-  "WOW": 417,
-  "XTNC": 418,
-  "LTHN": 419,
-  "NODE": 420,
-  "AGM": 421,
-  "CCX": 422,
-  "TNET": 423,
-  "TELOS": 424,
-  "AION": 425,
-  "BC": 426,
-  "KTV": 427,
-  "ZCR": 428,
-  "ERG": 429,
-  "PESO": 430,
-  "BTC2": 431,
-  "XRPHD": 432,
-  "WE": 433,
-  "KSM": 434,
-  "PCN": 435,
-  "NCH": 436,
-  "ICU": 437,
-  "LN": 438,
-  "DTP": 439,
-  "BTCR": 1032,
-  "AERGO": 441,
-  "XTH": 442,
-  "LV": 443,
-  "PHR": 444,
-  "VITAE": 445,
-  "COCOS": 446,
-  "DIN": 447,
-  "SPL": 448,
-  "YCE": 449,
-  "XLR": 450,
-  "KTS": 556,
-  "DGLD": 452,
-  "XNS": 453,
-  "EM": 454,
-  "SHN": 455,
-  "SEELE": 456,
-  "AE": 457,
-  "ODX": 458,
-  "KAVA": 459,
-  "GLEEC": 476,
-  "FIL": 461,
-  "RUTA": 462,
-  "CSDT": 463,
-  "ETI": 464,
-  "ZSLP": 465,
-  "ERE": 466,
-  "DX": 467,
-  "CPS": 468,
-  "BTH": 469,
-  "MESG": 470,
-  "FIMK": 471,
-  "AR": 472,
-  "OGO": 473,
-  "ROSE": 474,
-  "BARE": 475,
-  "CLR": 477,
-  "RNG": 478,
-  "OLO": 479,
-  "PEXA": 480,
-  "MOON": 481,
-  "OCEAN": 482,
-  "BNT": 483,
-  "AMO": 484,
-  "FCH": 485,
-  "LAT": 486,
-  "COIN": 487,
-  "VEO": 488,
-  "CCA": 489,
-  "GFN": 490,
-  "BIP": 491,
-  "KPG": 492,
-  "FIN": 493,
-  "BAND": 494,
-  "DROP": 495,
-  "BHT": 496,
-  "LYRA": 497,
-  "RUPX": 499,
-  "THETA": 500,
-  "SOL": 501,
-  "THT": 502,
-  "CFX": 503,
-  "KUMA": 504,
-  "HASH": 505,
-  "CSPR": 506,
-  "EARTH": 507,
-  "ERD": 508,
-  "CHI": 509,
-  "KOTO": 510,
-  "OTC": 511,
-  "SEELEN": 513,
-  "AETH": 514,
-  "DNA": 515,
-  "VEE": 516,
-  "SIERRA": 517,
-  "LET": 518,
-  "BSC": 9006,
-  "BTCV": 520,
-  "ABA": 521,
-  "SCC": 522,
-  "EDG": 523,
-  "AMS": 524,
-  "GOSS": 525,
-  "BU": 526,
-  "GRAM": 527,
-  "YAP": 528,
-  "SCRT": 529,
-  "NOVO": 530,
-  "GHOST": 531,
-  "HST": 532,
-  "PRJ": 533,
-  "YOU": 534,
-  "XHV": 535,
-  "BYND": 536,
-  "JOYS": 537,
-  "VAL": 616,
-  "FLOW": 539,
-  "SMESH": 540,
-  "SCDO": 541,
-  "IQS": 542,
-  "BIND": 543,
-  "COINEVO": 544,
-  "SCRIBE": 545,
-  "HYN": 546,
-  "BHP": 547,
-  "BBC": 1111,
-  "MKF": 549,
-  "XDC": 550,
-  "STR": 551,
-  "SUM": 997,
-  "HBC": 553,
-  "BCS": 555,
-  "LKR": 557,
-  "TAO": 558,
-  "XWC": 559,
-  "DEAL": 560,
-  "NTY": 561,
-  "TOP": 562,
-  "STARS": 563,
-  "AG": 564,
-  "CICO": 565,
-  "IRIS": 566,
-  "NCG": 567,
-  "LRG": 568,
-  "SERO": 569,
-  "BDX": 570,
-  "CCXX": 571,
-  "SLS": 572,
-  "SRM": 573,
-  "VLX": 574,
-  "VIVT": 575,
-  "BPS": 576,
-  "NKN": 577,
-  "ICL": 578,
-  "BONO": 579,
-  "PLC": 580,
-  "DUN": 581,
-  "DMCH": 582,
-  "CTC": 583,
-  "KELP": 584,
-  "GBCR": 585,
-  "XDAG": 586,
-  "PRV": 587,
-  "SCAP": 588,
-  "TFUEL": 589,
-  "GTM": 590,
-  "RNL": 591,
-  "GRIN": 592,
-  "MWC": 593,
-  "DOCK": 594,
-  "POLYX": 595,
-  "DIVER": 596,
-  "XEP": 597,
-  "APN": 598,
-  "TFC": 599,
-  "UTE": 600,
-  "MTC": 601,
-  "NC": 602,
-  "XINY": 603,
-  "DYN": 3381,
-  "BUFS": 605,
-  "STOS": 606,
-  "TAFT": 608,
-  "HYDRA": 609,
-  "NOR": 610,
-  "WCN": 613,
-  "OPT": 614,
-  "PSWAP": 615,
-  "XOR": 617,
-  "SSP": 618,
-  "DEI": 619,
-  "AXL": 620,
-  "ZERO": 621,
-  "ALPHA": 622,
-  "BDCASH": 623,
-  "NOBL": 624,
-  "EAST": 625,
-  "KDA": 626,
-  "LORE": 628,
-  "FNR": 629,
-  "NEXUS": 630,
-  "BTSG": 639,
-  "LFC": 640,
-  "AZERO": 643,
-  "XLN": 646,
-  "ZRB": 648,
-  "UCO": 650,
-  "PIRATE": 660,
-  "SFRX": 663,
-  "ACT": 666,
-  "PRKL": 667,
-  "SSC": 668,
-  "GC": 669,
-  "PLGR": 670,
-  "MPLGR": 671,
-  "YUNGE": 677,
-  "Voken": 678,
-  "Evrynet": 680,
-  "KAR": 686,
-  "CET": 688,
-  "VEIL": 698,
-  "GIO": 699,
-  "XDAI": 700,
-  "MCOIN": 707,
-  "CHC": 711,
-  "XTL": 713,
-  "BNB": 714,
-  "SIN": 715,
-  "DLN": 716,
-  "MCX": 725,
-  "BMK": 731,
-  "DENTX": 734,
-  "ATOP": 737,
-  "RAD": 747,
-  "XPRT": 750,
-  "BALLZ": 768,
-  "COSA": 770,
-  "BR": 771,
-  "BTW": 777,
-  "UIDD": 786,
-  "ACA": 787,
-  "BNC": 788,
-  "TAU": 789,
-  "PDEX": 799,
-  "BEET": 800,
-  "DST": 3564,
-  "QVT": 808,
-  "DVPN": 811,
-  "VET": 818,
-  "REEF": 819,
-  "CLO": 820,
-  "BDB": 822,
-  "CRUZ": 831,
-  "SAPP": 832,
-  "KYAN": 834,
-  "AZR": 835,
-  "CFL": 836,
-  "DASHD": 837,
-  "TRTT": 838,
-  "UCR": 839,
-  "PNY": 840,
-  "BECN": 841,
-  "SAGA": 843,
-  "SUV": 844,
-  "ESK": 845,
-  "OWO": 846,
-  "PEPS": 847,
-  "BIR": 848,
-  "DSM": 852,
-  "PRCY": 853,
-  "MOB": 866,
-  "IF": 868,
-  "LUM": 880,
-  "ZBC": 883,
-  "ADF": 886,
-  "NEO": 888,
-  "TOMO": 889,
-  "XSEL": 890,
-  "LKSC": 896,
-  "XEC": 1899,
-  "LMO": 900,
-  "HNT": 904,
-  "FIS": 907,
-  "SAAGE": 909,
-  "META": 916,
-  "FRA": 917,
-  "DIP": 925,
-  "RUNE": 931,
-  "LTP": 955,
-  "MATIC": 966,
-  "TWINS": 970,
-  "VCG": 987,
-  "XAZAB": 988,
-  "AIOZ": 989,
-  "PEC": 991,
-  "OKT": 996,
-  "LBTC": 1776,
-  "BCD": 999,
-  "BTN": 1000,
-  "TT": 1001,
-  "BKT": 1002,
-  "NODL": 1003,
-  "FTM": 1007,
-  "RPG": 1008,
-  "HT": 1010,
-  "ELV": 1011,
-  "BIC": 1013,
-  "EVC": 1020,
-  "ONT": 1024,
-  "KEX": 1026,
-  "MCM": 1027,
-  "RISE": 1120,
-  "ETSC": 1128,
-  "DFI": 1129,
-  "CDY": 1145,
-  "HOO": 1170,
-  "ALPH": 1234,
-  "MOVR": 1285,
-  "DFC": 1337,
-  "HYC": 1397,
-  "TENTSLP": 1410,
-  "BEAM": 1533,
-  "ELF": 1616,
-  "AUDL": 1618,
-  "ATH": 1620,
-  "NEW": 1642,
-  "BCX": 1688,
-  "XTZ": 1729,
-  "BBP": 1777,
-  "JPYS": 1784,
-  "VEGA": 1789,
-  "ADA": 1815,
-  "TES": 1856,
-  "ZTX": 1888,
-  "CLC": 1901,
-  "VIPS": 1919,
-  "CITY": 1926,
-  "XX": 1955,
-  "XMX": 1977,
-  "TRTL": 1984,
-  "EGEM": 1987,
-  "HODL": 1989,
-  "PHL": 1990,
-  "SC": 1991,
-  "MYT": 1996,
-  "POLIS": 1997,
-  "XMCC": 1998,
-  "COLX": 1999,
-  "GIN": 2000,
-  "MNP": 2001,
-  "KIN": 2017,
-  "EOSC": 2018,
-  "GBT": 2019,
-  "PKC": 2020,
-  "SKT": 2021,
-  "XHT": 2022,
-  "MCASH": 2048,
-  "TRUE": 2049,
-  "IoTE": 2112,
-  "XRG": 2137,
-  "ASK": 2221,
-  "QTUM": 2301,
-  "ETP": 2302,
-  "GXC": 2303,
-  "CRP": 2304,
-  "ELA": 2305,
-  "SNOW": 2338,
-  "AOA": 2570,
-  "REOSC": 2894,
-  "LUX": 3003,
-  "XHB": 3030,
-  "COS": 3077,
-  "SEQ": 3383,
-  "DEO": 3552,
-  "NAS": 2718,
-  "BND": 2941,
-  "CCC": 3276,
-  "ROI": 3377,
-  "FC8": 4040,
-  "YEE": 4096,
-  "IOTA": 4218,
-  "AXE": 4242,
-  "XYM": 4343,
-  "FIC": 5248,
-  "HNS": 5353,
-  "FUND": 5555,
-  "STX": 5757,
-  "VOW": 5895,
-  "SLU": 5920,
-  "GO": 6060,
-  "MOI": 6174,
-  "BPA": 6666,
-  "SAFE": 19165,
-  "ROGER": 6969,
-  "TOPL": 7091,
-  "BTV": 7777,
-  "SKY": 8000,
-  "PAC": 8192,
-  "KLAY": 8217,
-  "BTQ": 8339,
-  "SBTC": 8888,
-  "NULS": 8964,
-  "BTP": 8999,
-  "AVAX": 9000,
-  "ARB": 9001,
-  "BOBA": 9002,
-  "LOOP": 9003,
-  "STARK": 9004,
-  "AVAXC": 9005,
-  "NRG": 9797,
-  "BTF": 9888,
-  "GOD": 9999,
-  "FO": 10000,
-  "RTM": 10226,
-  "XRC": 10291,
-  "XPI": 10605,
-  "ESS": 11111,
-  "IPOS": 12345,
-  "MINA": 12586,
-  "BTY": 13107,
-  "YCC": 13108,
-  "SDGO": 15845,
-  "XTX": 16181,
-  "ARDR": 16754,
-  "FLUX": 19167,
-  "RITO": 19169,
-  "XND": 20036,
-  "PWR": 22504,
-  "BELL": 25252,
-  "CHX": 25718,
-  "ESN": 31102,
-  "TEO": 33416,
-  "BTCS": 33878,
-  "BTT": 34952,
-  "FXTC": 37992,
-  "AMA": 39321,
-  "AXIV": 43028,
-  "EVE": 49262,
-  "STASH": 49344,
-  "CELO": 52752,
-  "KETH": 65536,
-  "GRLC": 69420,
-  "GWL": 70007,
-  "ZYN": 77777,
-  "WICC": 99999,
-  "HOME": 100500,
-  "STC": 101010,
-  "STRAX": 105105,
-  "AKA": 200625,
-  "GENOM": 200665,
-  "ATS": 246529,
-  "PI": 314159,
-  "VALUE": 333332,
-  "X42": 424242,
-  "VITE": 666666,
-  "SEA": 888888,
-  "ILT": 1171337,
-  "ETHO": 1313114,
-  "XERO": 1313500,
-  "LAX": 1712144,
-  "EPK": 3924011,
-  "HYD": 4741444,
-  "BHD": 5249354,
-  "PTN": 5264462,
-  "WAN": 5718350,
-  "WAVES": 5741564,
-  "CRM": 6517357,
-  "SEM": 7562605,
-  "ION": 7567736,
-  "WGR": 7825266,
-  "OBSR": 7825267,
-  "AFS": 8163271,
-  "XDS": 15118976,
-  "AQUA": 61717561,
-  "HATCH": 88888888,
-  "kUSD": 91927009,
-  "GENS": 99999996,
-  "EQ": 99999997,
-  "FLUID": 99999998,
-  "QKC": 99999999,
-  "FVDC": 608589380
-};
+const TYPES = {};
+const NAMES = {};
+
+function define_ens_addr(addr) {
+	if (!(addr instanceof ENSAddr)) throw new TypeError('expected ENSAddr');
+	let {type, name} = addr;
+	let prev = TYPES[type] ?? NAMES[name];
+	if (prev) throw new TypeError(`${prev} already defined`);
+	TYPES[type] = NAMES[name] = addr;
+}
+
+function find_ens_addr(x) {
+	if (x instanceof ENSAddr) {
+		return x;
+	} else if (typeof x === 'string') {
+		return NAMES[x];
+	} else if (is_valid_type(x)) {
+		return TYPES[x];
+	} 
+}
+
+function coerce_ens_addr_type(x) {
+	let addr = find_ens_addr(x);
+	if (addr) return addr.type;
+	if (is_valid_type(x)) return x;
+}
+
+function is_valid_type(x) {
+	return Number.isSafeInteger(x);
+}
+
+class ENSAddr {
+	constructor(type, name) {
+		if (!is_valid_type(type)) throw new TypeError('type must be integer');
+		if (typeof name !== 'string') throw new TypeError('name must be string');
+		this.type = type;
+		this.name = name;
+	}
+	str_from_bytes(v) {
+		if (!(v instanceof Uint8Array)) throw new TypeError('expected bytes');
+		let s = this.str(v);
+		if (typeof s !== 'string') throw new Error('invalid format');
+		return s;
+	}
+	bytes_from_str(s) {
+		if (typeof s !== 'string') throw new TypeError('expected string');
+		let v = this.bytes(s);
+		if (!(v instanceof Uint8Array)) throw new Error('unknown format');
+		return v;
+	}
+	toString() {
+		return this.name;
+	}
+	str() { throw new TypeError('missing implementation'); }
+	bytes() { throw new TypeError('missing implementation'); }
+}
+
+// multiple coders are supported as long as they dont throw
+class ENSAddrCoder extends ENSAddr {
+	constructor(type, name, ...coders) {
+		super(type, name);
+		this.coders = coders;
+	}
+	bytes(s) {
+		for (let x of this.coders) {
+			let ret = x.bytes(s);
+			if (ret) return ret;
+		}
+	}
+	str(v) {
+		for (let x of this.coders) {
+			let ret = x.str(v);
+			if (ret) return ret;
+		}
+	}
+}
 
 // accepts anything that keccak can digest
 // returns Uint256
@@ -3022,7 +2656,7 @@ class ENSName {
 			const METHOD_OLD = 'addr(bytes32)';
 			let p;
 			if (await this.resolver.supports_interface(METHOD)) {
-				p = this.get_addr(60);
+				p = this.get_addr_bytes(60);
 			} else if (await this.resolver.supports_interface(METHOD_OLD)) {
 				p = this.call_resolver(ABIEncoder.method(METHOD_OLD).number(this.node)).then(dec => {
 					return dec.read_addr_bytes(); 
@@ -3134,35 +2768,56 @@ class ENSName {
 	// https://eips.ethereum.org/EIPS/eip-2304
 	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/AddrResolver.sol
 	// addrs are stored by type
-	async get_addr(addr) { 
-		let type = parse_addr_type(addr);
+	async get_addr(x) {
+		let addr = find_ens_addr(x);
+		if (!addr) throw new Error(`Unknown address type: ${x}`);
+		return addr.str_from_bytes(await this.get_addr_bytes(addr.type));
+	}
+	async get_addr_bytes(x) {
+		let type = coerce_ens_addr_type(x);
+		if (type === undefined) throw new Error(`Unknown address type: ${x}`);
 		let value = this._addr[type];
-		if (value !== undefined) return value;		
+		if (value !== undefined) return value;
 		this.assert_valid_resolver();
 		return promise_object_setter(this._addr, type, (async () => {
 			const METHOD = 'addr(bytes32,uint256)';
 			if (!await this.resolver.supports_interface(METHOD)) {
-				throw new Error(`Resolver does not support text`);
+				throw new Error(`Resolver does not support addr`);
 			}
 			try {
 				let dec = await this.call_resolver(ABIEncoder.method(METHOD).number(this.node).number(type));
 				return dec.memory();
 			} catch(cause) {
-				throw new Error(`Error reading addr ${format_addr_type(type, true)}: ${cause.message}`, {cause});
+				throw new Error(`Error reading addr type ${type}: ${cause.message}`, {cause});
 			}
 		})());
 	}
-	async get_addrs(addrs, named = true) {
-		let types;
-		if (addrs === undefined) {
-			types = Object.keys(this._addr); // all known addrs
-		} else if (Array.isArray(addrs)) {
-			types = addrs.map(parse_addr_type); // throws
+	async get_addrs(types) {
+		if (types === undefined) {
+			types = Object.keys(this._addr).map(x => parseInt(x));
+		} else if (Array.isArray(types)) {
+			types = types.map(coerce_ens_addr_type).filter(x => x !== undefined);
 		} else {
 			throw new TypeError('expected array');
 		} 
-		let values = await Promise.all(types.map(type => this.get_addr(type)));
-		return Object.fromEntries(types.map((type, i) => [named ? format_addr_type(type) : type, values[i]]));
+		types = [...new Set(types)];
+		let values = await Promise.all(types.map(type => this.get_addr_bytes(type)));
+		return types.map((type, i) => {
+			let bytes = values[i];
+			let addr = find_ens_addr(type);
+			let ret = {type, bytes};
+			if (addr) {
+				ret.name = addr.name;
+				if (bytes.length > 0) {
+					try {
+						ret.addr = addr.str_from_bytes(bytes);
+					} catch (err) {
+						ret.error = err;
+					}
+				}
+			}
+			return ret;
+		});
 	}
 	// https://github.com/ethereum/EIPs/pull/619
 	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/PubkeyResolver.sol
@@ -3334,6 +2989,7 @@ async function parse_avatar(avatar, provider, address) {
 	return {type: 'unknown'};
 }
 
+
 function format_addr_type(type, include_type = false) {
 	let pos = Object.values(ADDR_TYPES).indexOf(type);
 	if (pos >= 0) { // the type has a name
@@ -3345,19 +3001,178 @@ function format_addr_type(type, include_type = false) {
 	}
 }
 
-// see: test/build-address-types.js
-// https://github.com/satoshilabs/slips/blob/master/slip-0044.md
-function parse_addr_type(x) {
-	if (typeof x === 'string') {
-		let type = ADDR_TYPES[x];
-		if (typeof type !== 'number') throw new Error(`Unknown address type for name: ${x}`);
-		return type;
-	} else if (Number.isSafeInteger(x)) {		
-		return x;
-	} else {
-		throw new TypeError(`Invalid address type: ${x}`);
+class BTCCoder extends Coder {
+	constructor(p2pkh, p2sh) {
+		super();
+		this.p2pkh = p2pkh;
+		this.p2sh = p2sh;
+	}
+	str(v)  {
+		let n = v.length;
+		// P2PKH: OP_DUP OP_HASH160 <pubKeyHash> OP_EQUALVERIFY OP_CHECKSIG
+		if (n >= 4 && v[0] == 0x76 &&  v[1] == 0xA9 && v[2] == n - 5 && v[n-2] == 0x88 && v[n-1] == 0xAC) {
+			return X$1.str_from_bytes([...this.p2pkh[0], ...v.slice(3, -2)]);
+		// P2SH: OP_HASH160 <scriptHash> OP_EQUAL
+		} else if (n >= 3 && v[0] == 0xA9 && v[1] == n - 2 && v[n-1] == 0x76) {
+			return X$1.str_from_bytes([...this.p2sh[0], ...v.slice(2)]);
+		}
+	}
+	bytes(s) {
+		let v = X$1.bytes_from_str(s);
+		let n = 20; // sizeof HASH160
+		for (let u of this.p2pkh) {
+			if (v.length - u.length == n && compare_arrays(u, v.slice(0, u.length)) == 0) {
+				return Uint8Array.from([0x76, 0xA9, n, ...v.slice(-n), 0x88, 0xAC]);
+			}
+		}
+		for (let u of this.p2sh) {
+			if (v.length - u.length == n && compare_arrays(u, v.slice(0, u.length)) == 0) {
+				return Uint8Array.from([0xA9, n, ...v.slice(-n), 0x76]);
+			}
+		}
 	}
 }
+
+class HexCoder extends Coder {
+	str(v) {
+		return standardize_address(hex_from_bytes(v));
+	}
+	bytes(s) {
+		return bytes_from_hex(standardize_address(s))
+	}
+}
+
+const X = new HexCoder();
+
+// https://github.com/satoshilabs/slips/blob/master/slip-0044.md
+// https://github.com/ensdomains/address-encoder/blob/master/src/index.ts
+
+define_ens_addr(new ENSAddrCoder(0, 'BTC', new BTCCoder([[0x00]], [[0x05]]), new SegwitCoder('bc')));
+define_ens_addr(new ENSAddrCoder(2, 'LTC', new BTCCoder([[0x30]], [[0x32], [0x05]]), new SegwitCoder('ltc')));
+define_ens_addr(new ENSAddrCoder(3, 'DOGE', new BTCCoder([[0x1E]], [[0x16]])));
+define_ens_addr(new ENSAddrCoder(4, 'RDD', new BTCCoder([[0x3D]], [[0x05]])));
+define_ens_addr(new ENSAddrCoder(5, 'DASH', new BTCCoder([[0x4C]], [[0x10]])));
+define_ens_addr(new ENSAddrCoder(6, 'PPC', new BTCCoder([[0x37]], [[0x75]])));
+define_ens_addr(new ENSAddrCoder(7, 'NMC', X$1));
+define_ens_addr(new ENSAddrCoder(14, 'VIA', new BTCCoder([[0x47]], [[0x21]])));
+// define_ens_addr(17, 'GRS') groestlcoinChain('grs', [[0x24]], [[0x05]]),
+define_ens_addr(new ENSAddrCoder(20, 'DGB', new BTCCoder([[0x1e]], [[0x3f]]), new SegwitCoder('dgb')));
+define_ens_addr(new ENSAddrCoder(22, 'MONA', new BTCCoder([[0x32]], [[0x37], [0x05]]), new SegwitCoder('mona')));
+define_ens_addr(new ENSAddrCoder(42, 'DCR', Base58BTC));
+define_ens_addr(new ENSAddrCoder(43, 'XEM', new MapStringCoder(Base32, s => s.toUpperCase())));
+define_ens_addr(new ENSAddrCoder(55, 'AIB', new BTCCoder([[0x17]], [[0x05]])));
+define_ens_addr(new ENSAddrCoder(57, 'SYS', new BTCCoder([[0x3f]], [[0x05]]), new SegwitCoder('sys')));
+define_ens_addr(new ENSAddrCoder(56, 'BSC', X));
+define_ens_addr(new ENSAddrCoder(60, 'ETH', X));
+define_ens_addr(new ENSAddrCoder(61, 'ETC', X));
+// define_ens_addr(74, 'ICX') icxAddressEncoder, icxAddressDecoder),
+define_ens_addr(new ENSAddrCoder(77, 'XVG', new BTCCoder([[0x1E]], [[0x21]])));
+define_ens_addr(new ENSAddrCoder(105, 'STRAT', new BTCCoder([[0x3F]], [[0x7D]])));
+define_ens_addr(new ENSAddrCoder(111, 'ARK', new MapBytesCoder(X$1, v => {
+	if (v[0] != 23) throw new Error('invalid address');
+	return v;
+})));
+define_ens_addr(new ENSAddrCoder(118, 'ATOM', new Bech32Coder(Bech32.TYPE_1, 'cosmos')));
+define_ens_addr(new ENSAddrCoder(119, 'ZIL', new Bech32Coder(Bech32.TYPE_1, 'zil')));
+define_ens_addr(new ENSAddrCoder(120, 'EGLD', new Bech32Coder(Bech32.TYPE_1, 'erd')));
+define_ens_addr(new ENSAddrCoder(121, 'ZEN', new MapStringCoder(X$1, s => {
+	if (!/^(zn|t1|zs|t3|zc)/.test(s)) throw new Error('invalid address');
+	return s;
+})));
+//getConfig('XMR', 128, xmrAddressEncoder, xmrAddressDecoder),
+define_ens_addr(new ENSAddrCoder(133, 'ZEC', new BTCCoder([[0x1c, 0xb8]], [[0x1c, 0xbd]])), new SegwitCoder('zs'));
+//   getConfig('LSK', 134, liskAddressEncoder, liskAddressDecoder),
+//   eosioChain('STEEM', 135, 'STM'),
+define_ens_addr(new ENSAddrCoder(136, 'FIRO', new BTCCoder([[0x52]], [[0x07]])));
+define_ens_addr(new ENSAddrCoder(137, 'MATIC', X));
+define_ens_addr(new ENSAddrCoder(141, 'KMD', new BTCCoder([[0x3C]], [[0x55]])));
+//getConfig('XRP', 144, data => xrpCodec.encodeChecked(data), data => xrpCodec.decodeChecked(data)),
+//getConfig('BCH', 145, encodeCashAddr, decodeBitcoinCash),
+//getConfig('XLM', 148, strEncoder, strDecoder),
+define_ens_addr(new ENSAddrCoder(153, 'BTM', new SegwitCoder('bm')));
+define_ens_addr(new ENSAddrCoder(156, 'BTG', new BTCCoder([[0x26]], [[0x17]]), new SegwitCoder('btg')));
+//  getConfig('NANO', 165, nanoAddressEncoder, nanoAddressDecoder),
+define_ens_addr(new ENSAddrCoder(175, 'RVN', new BTCCoder([[0x3c]], [[0x7a]])));
+define_ens_addr(new ENSAddrCoder(178, 'POA', X));
+define_ens_addr(new ENSAddrCoder(192, 'LCC', new BTCCoder([[0x1c]], [[0x32], [0x05]]), new SegwitCoder('lcc')));
+//   eosioChain('EOS', 194, 'EOS'),
+define_ens_addr(new ENSAddrCoder(195, 'TRX', X$1));
+//getConfig('BCN', 204, bcnAddressEncoder, bcnAddressDecoder),
+//eosioChain('FIO', 235, 'FIO'),
+//getConfig('BSV', 236, bsvAddresEncoder, bsvAddressDecoder),
+define_ens_addr(new ENSAddrCoder(239, 'NEO', X$1));
+//  getConfig('NIM', 242, nimqEncoder, nimqDecoder),
+define_ens_addr(new ENSAddrCoder(246, 'EWT', X));
+//   getConfig('ALGO', 283, algoEncode, algoDecode),
+define_ens_addr(new ENSAddrCoder(291, 'IOST', Base58BTC));
+define_ens_addr(new ENSAddrCoder(301, 'DIVI', new BTCCoder([[0x1e]], [[0xd]])));
+define_ens_addr(new ENSAddrCoder(304, 'IOTX', new Bech32Coder(Bech32.TYPE_1, 'io')));
+//  eosioChain('BTS', 308, 'BTS'),
+define_ens_addr(new ENSAddrCoder(309, 'CKB', new Bech32Coder(Bech32.TYPE_1, 'ckb')));
+define_ens_addr(new ENSAddrCoder(330, 'LUNA', new Bech32Coder(Bech32.TYPE_1, 'terra')));
+// getConfig('DOT', 354, dotAddrEncoder, ksmAddrDecoder),
+// getConfig('VSYS', 360, vsysAddressEncoder, vsysAddressDecoder),
+// eosioChain('ABBC', 367, 'ABBC'),
+// getConfig('NEAR', 397, encodeNearAddr, decodeNearAddr),
+// getConfig('ETN', 415, etnAddressEncoder, etnAddressDecoder),
+// getConfig('AION', 425, aionEncoder, aionDecoder),
+// getConfig('KSM', 434, ksmAddrEncoder, ksmAddrDecoder),
+// getConfig('AE', 457, aeAddressEncoder, aeAddressDecoder),
+define_ens_addr(new ENSAddrCoder(459, 'KAVA', new Bech32Coder(Bech32.TYPE_1, 'kava')));
+//getConfig('FIL', 461, filAddrEncoder, filAddrDecoder),
+//getConfig('AR', 472, arAddressEncoder, arAddressDecoder),
+define_ens_addr(new ENSAddrCoder(489, 'CCA', new BTCCoder([[0x0b]], [[0x05]])));
+define_ens_addr(new ENSAddrCoder(500, 'THETA', X));
+define_ens_addr(new ENSAddrCoder(501, 'SOL', Base58BTC));
+// getConfig('XHV', 535, xmrAddressEncoder, xmrAddressDecoder),
+// getConfig('FLOW', 539, flowEncode, flowDecode),
+define_ens_addr(new ENSAddrCoder(566, 'IRIS', new Bech32Coder(Bech32.TYPE_1, 'griiaan')));
+define_ens_addr(new ENSAddrCoder(568, 'LRG', new BTCCoder([[0x1e]], [[0x0d]])));
+// getConfig('SERO', 569, seroAddressEncoder, seroAddressDecoder),
+// getConfig('BDX', 570, xmrAddressEncoder, xmrAddressDecoder),
+define_ens_addr(new ENSAddrCoder(571, 'CCXX', new BTCCoder([[0x89]], [[0x4b], [0x05]]), new SegwitCoder('ccx')));
+define_ens_addr(new ENSAddrCoder(573, 'SRM', Base58BTC));
+define_ens_addr(new ENSAddrCoder(574, 'VLX', Base58BTC));
+define_ens_addr(new ENSAddrCoder(576, 'BPS', new BTCCoder([[0x00]], [[0x05]])));
+define_ens_addr(new ENSAddrCoder(589, 'TFUEL', X));
+define_ens_addr(new ENSAddrCoder(592, 'GRIN', new Bech32Coder(Bech32.TYPE_1, 'grin')));
+define_ens_addr(new ENSAddrCoder(614, 'OPT', X));
+define_ens_addr(new ENSAddrCoder(700, 'XDAI', X));
+define_ens_addr(new ENSAddrCoder(703, 'VET', X));
+define_ens_addr(new ENSAddrCoder(714, 'BNB', new Bech32Coder(Bech32.TYPE_1, 'bnb')));
+define_ens_addr(new ENSAddrCoder(820, 'CLO', X));
+//eosioChain('HIVE', 825, 'STM'),
+define_ens_addr(new ENSAddrCoder(889, 'TOMO', X));
+//getConfig('HNT', 904, hntAddresEncoder, hntAddressDecoder),
+define_ens_addr(new ENSAddrCoder(931, 'RUNE', new Bech32Coder(Bech32.TYPE_1, 'thor')));
+define_ens_addr(new ENSAddrCoder(999, 'BCD', new BTCCoder([[0x00]], [[0x05]]), new SegwitCoder('bcd')));
+define_ens_addr(new ENSAddrCoder(1001, 'TT', X));
+define_ens_addr(new ENSAddrCoder(1007, 'FTM', X));
+define_ens_addr(new ENSAddrCoder(1023, 'ONE', new Bech32Coder(Bech32.TYPE_1, 'one')));
+//{ coinType: 1729, decoder: tezosAddressDecoder,encoder: tezosAddressEncoder,name: 'XTZ',},
+//getConfig('ONT', 1024, ontAddrEncoder, ontAddrDecoder),
+//  cardanoChain('ADA', 1815, 'addr'),
+//getConfig('SC', 1991, siaAddressEncoder, siaAddressDecoder),
+//getConfig('QTUM', 2301, bs58Encode, bs58Decode),
+//eosioChain('GXC', 2303, 'GXC'),
+//getConfig('ELA', 2305, bs58EncodeNoCheck, bs58DecodeNoCheck),
+//getConfig('NAS', 2718, nasAddressEncoder, nasAddressDecoder),
+//coinType: 3030,decoder: hederaAddressDecoder,encoder: hederaAddressEncoder, name: 'HBAR',
+//iotaBech32Chain('IOTA', 4218, 'iota'),
+//getConfig('HNS', 5353, hnsAddressEncoder, hnsAddressDecoder),
+//getConfig('STX', 5757, c32checkEncode, c32checkDecode),
+define_ens_addr(new ENSAddrCoder(6060, 'GO', X));
+define_ens_addr(new ENSAddrCoder(8444, 'XCH', new Bech32Coder(Bech32.TYPE_M, 'xch')));
+//  getConfig('NULS', 8964, nulsAddressEncoder, nulsAddressDecoder),
+define_ens_addr(new ENSAddrCoder(9000, 'AVAX', new Bech32Coder(Bech32.TYPE_1, 'avax')));
+define_ens_addr(new ENSAddrCoder(9797, 'NRG', X));
+//getConfig('ARDR', 16754, ardrAddressEncoder, ardrAddressDecoder),
+//zcashChain('ZEL', 19167, 'za', [[0x1c, 0xb8]], [[0x1c, 0xbd]]),
+define_ens_addr(new ENSAddrCoder(42161, 'ARB1', X));
+define_ens_addr(new ENSAddrCoder(52752, 'CELO', X));
+//bitcoinBase58Chain('WICC', 99999, [[0x49]], [[0x33]]),
+//getConfig('WAN', 5718350, wanChecksummedHexEncoder, wanChecksummedHexDecoder),
+//getConfig('WAVES', 5741564, bs58EncodeNoCheck, wavesAddressDecoder),
 
 const TYPE_721 = 'ERC-721';
 const TYPE_1155 = 'ERC-1155';
@@ -3505,4 +3320,4 @@ function fix_multihash_uri(s) {
 	return s;
 }
 
-export { ABIDecoder, ABIEncoder, ADDR_TYPES, BASE10, BASE16, BASE2, BASE32, BASE32_HEX, BASE36, BASE58_BTC, BASE64, BASE64_URL, BASE8, CID, CIDv0, CIDv1, Chain, ENS, ENSName, ENSOwner, ENSResolver, FetchProvider, NFT, NULL_ADDRESS, Providers, Uint256, WebSocketProvider, assert_uvarint, bytes4_from_method, bytes_from_hex, bytes_from_utf8, compare_arrays, data_uri_from_json, decode_multibase, defined_chains, determine_window_provider, encode_multibase, ensure_chain, eth_call, find_chain, fix_multihash_uri, format_addr_type, hex_from_bytes, hex_from_method, is_checksum_address, is_null_hex, is_valid_address, keccak, labelhash, labels_from_name, left_truncate_bytes, make_smart, namehash, parse_addr_type, parse_avatar, parse_content, promise_object_setter, read_uvarint, replace_ipfs_protocol, set_bytes_to_number, sha3, shake, short_address, sizeof_uvarint, standardize_address, standardize_chain_id, supports_interface, unsigned_from_bytes, utf8_from_bytes, write_uvarint };
+export { ABIDecoder, ABIEncoder, Base10, Base16, Base2, Base32, Base32Hex, Base36, Base58BTC, X$1 as Base58Check, Base64, Base64URL, Base8, Bech32, Bech32Coder, CID, CIDv0, CIDv1, Chain, ENS, ENSAddr, ENSAddrCoder, ENSName, ENSOwner, ENSResolver, FetchProvider, NFT, NULL_ADDRESS, Providers, Segwit, SegwitCoder, Uint256, WebSocketProvider, assert_uvarint, bytes4_from_method, bytes_from_hex$1 as bytes_from_hex, bytes_from_utf8, coerce_ens_addr_type, compare_arrays, data_uri_from_json, decode_multibase, define_ens_addr, defined_chains, determine_window_provider, encode_multibase, ensure_chain, eth_call, find_chain, find_ens_addr, fix_multihash_uri, format_addr_type, hex_from_bytes, hex_from_method, is_checksum_address, is_null_hex, is_valid_address, keccak, labelhash, labels_from_name, left_truncate_bytes, make_smart, namehash, parse_avatar, parse_content, promise_object_setter, read_uvarint, replace_ipfs_protocol, set_bytes_to_number, sha256, sha3, shake, short_address, sizeof_uvarint, standardize_address, standardize_chain_id, supports_interface, unsigned_from_bytes, utf8_from_bytes, write_uvarint };

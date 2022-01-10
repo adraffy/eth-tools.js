@@ -1,12 +1,19 @@
 {
   "name": "@adraffy/eth-tools",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "description": "Compact set of ES6 tools for Ethereum dapps that work in the browser",
   "keywords": [
     "ethereum",
     "abi",
     "ens",
-    "keccak"
+    "keccak",
+    "sha256",
+    "multihash",
+    "multibase",
+    "bech32",
+    "base58check",
+    "cid",
+    "uvarint"
   ],
   "type": "module",
   "main": "index.js",

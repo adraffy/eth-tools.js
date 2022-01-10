@@ -141,7 +141,9 @@ export class ENSName {
 	get_text(key: string): Promise<string>;
 	get_texts(keys: string[]): Promise<Record<string,string>>;
 	get_addr(addr: any): Promise<Uint8Array>;
-	get_addrs(addrs: any[], named?: boolean): Promise<Record<any, Uint8Array>>;
+	get_addrs(addrs: any[]): Promise<Record<string, string>>;
+	get_raw(addr: any): Promise<Uint8Array>;
+	get_raw_addrs(addrs: any[]): Promise<Record<any, Uint8Array>>;
 	get_content(): Promise<{hash: Uint8Array, url?: string}>;
 	get_pubkey(): Promise<{x: Uint256, y: Uint256}>;
 }

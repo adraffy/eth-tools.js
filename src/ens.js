@@ -7,7 +7,7 @@ import {read_uvarint} from './uvarint.js';
 import {CID} from './cid.js';
 import {Providers} from './providers.js';
 import {standardize_chain_id} from './chains.js';
-import ADDR_TYPES from './ens-address-types.js';
+import {find_ens_addr, coerce_ens_addr_type} from './ens-addr.js';
 
 // accepts anything that keccak can digest
 // returns Uint256
@@ -258,7 +258,7 @@ export class ENSName {
 			const METHOD_OLD = 'addr(bytes32)';
 			let p;
 			if (await this.resolver.supports_interface(METHOD)) {
-				p = this.get_addr(60);
+				p = this.get_addr_bytes(60);
 			} else if (await this.resolver.supports_interface(METHOD_OLD)) {
 				p = this.call_resolver(ABIEncoder.method(METHOD_OLD).number(this.node)).then(dec => {
 					return dec.read_addr_bytes(); 
@@ -370,35 +370,56 @@ export class ENSName {
 	// https://eips.ethereum.org/EIPS/eip-2304
 	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/AddrResolver.sol
 	// addrs are stored by type
-	async get_addr(addr) { 
-		let type = parse_addr_type(addr);
+	async get_addr(x) {
+		let addr = find_ens_addr(x);
+		if (!addr) throw new Error(`Unknown address type: ${x}`);
+		return addr.str_from_bytes(await this.get_addr_bytes(addr.type));
+	}
+	async get_addr_bytes(x) {
+		let type = coerce_ens_addr_type(x);
+		if (type === undefined) throw new Error(`Unknown address type: ${x}`);
 		let value = this._addr[type];
-		if (value !== undefined) return value;		
+		if (value !== undefined) return value;
 		this.assert_valid_resolver();
 		return promise_object_setter(this._addr, type, (async () => {
 			const METHOD = 'addr(bytes32,uint256)';
 			if (!await this.resolver.supports_interface(METHOD)) {
-				throw new Error(`Resolver does not support text`);
+				throw new Error(`Resolver does not support addr`);
 			}
 			try {
 				let dec = await this.call_resolver(ABIEncoder.method(METHOD).number(this.node).number(type));
 				return dec.memory();
 			} catch(cause) {
-				throw new Error(`Error reading addr ${format_addr_type(type, true)}: ${cause.message}`, {cause});
+				throw new Error(`Error reading addr type ${type}: ${cause.message}`, {cause});
 			}
 		})());
 	}
-	async get_addrs(addrs, named = true) {
-		let types;
-		if (addrs === undefined) {
-			types = Object.keys(this._addr); // all known addrs
-		} else if (Array.isArray(addrs)) {
-			types = addrs.map(parse_addr_type); // throws
+	async get_addrs(types) {
+		if (types === undefined) {
+			types = Object.keys(this._addr).map(x => parseInt(x));
+		} else if (Array.isArray(types)) {
+			types = types.map(coerce_ens_addr_type).filter(x => x !== undefined);
 		} else {
 			throw new TypeError('expected array');
 		} 
-		let values = await Promise.all(types.map(type => this.get_addr(type)));
-		return Object.fromEntries(types.map((type, i) => [named ? format_addr_type(type) : type, values[i]]));
+		types = [...new Set(types)];
+		let values = await Promise.all(types.map(type => this.get_addr_bytes(type)));
+		return types.map((type, i) => {
+			let bytes = values[i];
+			let addr = find_ens_addr(type);
+			let ret = {type, bytes};
+			if (addr) {
+				ret.name = addr.name;
+				if (bytes.length > 0) {
+					try {
+						ret.addr = addr.str_from_bytes(bytes);
+					} catch (err) {
+						ret.error = err;
+					}
+				}
+			}
+			return ret;
+		});
 	}
 	// https://github.com/ethereum/EIPs/pull/619
 	// https://github.com/ensdomains/resolvers/blob/master/contracts/profiles/PubkeyResolver.sol
@@ -571,7 +592,6 @@ export async function parse_avatar(avatar, provider, address) {
 	return {type: 'unknown'};
 }
 
-export {ADDR_TYPES}; // mutable?
 
 export function format_addr_type(type, include_type = false) {
 	let pos = Object.values(ADDR_TYPES).indexOf(type);
@@ -581,19 +601,5 @@ export function format_addr_type(type, include_type = false) {
 		return s;
 	} else { // the type doesn't have an known name
 		return '0x' + x.toString(16).padStart(4, '0');
-	}
-}
-
-// see: test/build-address-types.js
-// https://github.com/satoshilabs/slips/blob/master/slip-0044.md
-export function parse_addr_type(x) {
-	if (typeof x === 'string') {
-		let type = ADDR_TYPES[x];
-		if (typeof type !== 'number') throw new Error(`Unknown address type for name: ${x}`);
-		return type;
-	} else if (Number.isSafeInteger(x)) {		
-		return x;
-	} else {
-		throw new TypeError(`Invalid address type: ${x}`);
 	}
 }

@@ -1,5 +1,5 @@
 import {sizeof_uvarint, read_uvarint, write_uvarint} from './uvarint.js';
-import {decode_multibase, encode_multibase, BASE58_BTC} from './multibase.js';
+import {decode_multibase, encode_multibase, Base58BTC} from './multibase.js';
 import {Multihash} from './multihash.js';
 
 // https://github.com/multiformats/cid/blob/master/original-rfc.md
@@ -9,7 +9,7 @@ export class CID {
 	static from_str(s) {
 		if (typeof s !== 'string') throw new TypeError('expected string');
 		if (s.length == 46 && s.startsWith('Qm')) {
-			return this.from_bytes(BASE58_BTC.bytes_from_str(s));
+			return this.from_bytes(Base58BTC.bytes_from_str(s));
 		} else {
 			let v = decode_multibase(s);
 			if (v[0] == 0x12) throw new Error(`CIDv0 cannot be multibase: ${s}`);

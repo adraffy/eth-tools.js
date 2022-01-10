@@ -10,11 +10,9 @@ import {Segwit, hex_from_bytes} from '../index.js';
 	['tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c', '5120000000c4a5cad46221b2a187905e5266362b99d5e91c6ce24d165dab93e86433'],
 	['bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0', '512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'],
 ].forEach(([input, expect]) => {	
-	let segwit = Segwit.decode(input);
+	let segwit = Segwit.from_str(input);
 	if (hex_from_bytes(segwit.program) !== expect.slice(4)) {
 		console.log({input, segwit, expect});
 		throw new Error('wtf');
 	}
 });
-
-console.log('OK');

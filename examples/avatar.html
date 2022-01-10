@@ -607,18 +607,35 @@ async function resolve0(output, input) {
 		const ID_addr = 'addr';
 		if (addr_keys.length > 0) {
 			promises.push(name.get_addrs(addr_keys).then(addrs => {
+				addrs = addrs.filter(x => x.bytes.length > 0);
+				if (addrs.length == 0) return;
 				let table = document.createElement('table');
 				table.id = ID_addr;
+				/*
 				let tr_warning = document.createElement('tr');
 				tr_warning.innerHTML = '<td colspan="2" style="background: #ffc;text-align:center">⚠️ Addresses are shown as raw hex data and require encoding</td>';
 				table.append(tr_warning);
-				for (let [k, v] of Object.entries(addrs)) {
+				*/
+				for (let addr of addrs) {
 					let tr = document.createElement('tr');
-					tr.innerHTML = `<td class="key">${html_escape(k)}</td><td class="wrapped">${hex_from_bytes(v)}</td>`;
+
+					let temp;
+					if (addr.name) {
+						if (addr.addr) {
+							temp = `<code>${addr.addr}</code>`;
+						} else {
+							temp = `❌ ${addr.error}`;							
+						}
+					} else {
+						temp = `⚠️ Raw Bytes: <code>${hex_from_bytes(addr.bytes)}</code>`;
+					}
+
+					tr.innerHTML = `<td class="key">${addr.name ? html_escape(addr.name) : '0x'+addr.type.toString(16)}</td><td class="wrapped">${temp}</td>`;
 					table.append(tr);
 				}
 				output.append(table);
 			}).catch(err => {
+				console.log(err);
 				let error = create_error(`<b>Address Record Error:</b> ${err.message}`);
 				error.id = ID_addr;
 				output.append(error);

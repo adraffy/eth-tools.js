@@ -1,5 +1,49 @@
-export class Lookup {
+export class Coder {
+	bytes_from_str(s) {
+		if (typeof s !== 'string') throw new TypeError('expected string');
+		return this.bytes(s);
+	}
+	str_from_bytes(v) {
+		if (Array.isArray(v)) v = Uint8Array.from(v);
+		if (!(v instanceof Uint8Array)) throw new TypeError('expected bytes');
+		return this.str(v);
+	}
+	// overriden by subclasses
+	bytes() { throw new TypeError('bug: not implemented'); }
+	str() { throw new TypeError('bug: not implemented'); }
+}
+
+export class MapStringCoder extends Coder {
+	constructor(coder, fn) {
+		super();
+		this.coder = coder;
+		this.fn = fn;
+	}
+	bytes(s) {
+		return this.coder.bytes(this.fn(s, true));
+	}
+	str(v) {
+		return this.fn(this.coder.str(v), false);
+	}
+}
+
+export class MapBytesCoder extends Coder {
+	constructor(coder, fn) {
+		super();
+		this.coder = coder;
+		this.fn = fn;
+	}
+	bytes(s) {
+		return this.fn(this.coder.bytes(s, true));
+	}
+	str(v) {
+		return this.coder.str(this.fn(v, false));
+	}
+}
+
+export class BaseCoder extends Coder {
 	constructor(lookup) {
+		super();
 		let v = [...lookup];
 		if (v.length !== lookup.length) throw new TypeError(`expected UTF16`);
 		this.lookup = lookup;
@@ -11,12 +55,40 @@ export class Lookup {
 		return i;
 	}
 	format(v) {
-		return v.map(x => this.lookup[x]).join('');
+		return v.reduce((s, x) => s + this.lookup[x], '');
 	}
 }
 
-export class Prefix0 extends Lookup {
-	bytes_from_str(s) {
+// https://github.com/Chia-Network/chia-blockchain/blob/af0d6385b238c91bff4fec1a9e9c0f6158fbf896/chia/util/bech32m.py#L85
+export function convert_bits(v, src_bits, dst_bits, pad) {
+	if (!Array.isArray(v) && !ArrayBuffer.isView(v)) throw new TypeError('expected array');
+	if (!Number.isSafeInteger(src_bits) || src_bits < 1 || src_bits > 32) throw new TypeError('invalid from bits');
+	if (!Number.isSafeInteger(dst_bits) || dst_bits < 1 || dst_bits > 32) throw new TypeError('invalid to bits');
+	let acc = 0;
+	let bits = 0;
+	let ret = [];
+	let mask = (1 << dst_bits) - 1;
+	for (let x of v) {
+		if (x < 0 || (x >> src_bits) !== 0) throw new Error('invalid digit');
+		acc = (acc << src_bits) | x;
+		bits += src_bits;
+		while (bits >= dst_bits) {
+			bits -= dst_bits;
+			ret.push((acc >> bits) & mask);
+		}
+	}
+	if (pad) {
+		if (bits > 0) {
+			ret.push((acc << (dst_bits - bits)) & mask);
+		}
+	} else if (bits >= src_bits || ((acc << (dst_bits - bits)) & mask)) {
+		throw new Error('malformed');
+	}
+	return Uint8Array.from(ret);
+}
+
+export class Prefix0 extends BaseCoder {
+	bytes(s) {
 		let {lookup} = this;
 		let base = lookup.length;
 		let n = s.length;
@@ -37,7 +109,7 @@ export class Prefix0 extends Lookup {
 		for (let i = 0; i < n && s[i] === lookup[0]; i++) pos++;
 		return v.subarray(0, pos).reverse();
 	}
-	str_from_bytes(v) {
+	str(v) {
 		let base = this.lookup.length;
 		let u = [];
 		for (let x of v) {
@@ -56,12 +128,12 @@ export class Prefix0 extends Lookup {
 	}
 }
 
-export class RFC4648 extends Lookup {
+export class RFC4648 extends BaseCoder {
 	constructor(lookup, w) {
 		super(lookup);
 		this.w = w;
 	}
-	bytes_from_str(s, pad) {
+	bytes(s, pad) {
 		let {w} = this;
 		let n = s.length;
 		let pos = 0;
@@ -81,7 +153,7 @@ export class RFC4648 extends Lookup {
 		if ((carry << (8 - width)) & 0xFF) throw new Error('wtf');
 		return v;
 	}
-	str_from_bytes(v, pad) {
+	str(v, pad) {
 		let {w, lookup} = this;
 		let mask = (1 << w) - 1;
 		let carry = 0;

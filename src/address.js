@@ -38,3 +38,4 @@ export function short_address(s) {
 	s = standardize_address(s);
 	return s.slice(0, 6) + '..' + s.slice(-4);
 }
+
