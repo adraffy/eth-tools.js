@@ -32,14 +32,14 @@ define_ens_addr(new ENSAddrCoder(61, 'ETC', HexCoder));
 define_ens_addr(new ENSAddrCoder(77, 'XVG', new BTCCoder([[0x1E]], [[0x21]])));
 define_ens_addr(new ENSAddrCoder(105, 'STRAT', new BTCCoder([[0x3F]], [[0x7D]])));
 define_ens_addr(new ENSAddrCoder(111, 'ARK', new MapBytesCoder(Base58Check, v => {
-	if (v[0] != 23) throw new Error('invalid address');
+	if (v[0] != 23) throw new Error('invalid prefix');
 	return v;
 })));
 define_ens_addr(new ENSAddrCoder(118, 'ATOM', new Bech32Coder(Bech32.TYPE_1, 'cosmos')));
 define_ens_addr(new ENSAddrCoder(119, 'ZIL', new Bech32Coder(Bech32.TYPE_1, 'zil')));
 define_ens_addr(new ENSAddrCoder(120, 'EGLD', new Bech32Coder(Bech32.TYPE_1, 'erd')));
 define_ens_addr(new ENSAddrCoder(121, 'ZEN', new MapStringCoder(Base58Check, s => {
-	if (!/^(zn|t1|zs|t3|zc)/.test(s)) throw new Error('invalid address');
+	if (!/^(zn|t1|zs|t3|zc)/.test(s)) throw new Error('invalid prefix');
 	return s;
 })));
 //getConfig('XMR', 128, xmrAddressEncoder, xmrAddressDecoder),
@@ -106,7 +106,11 @@ define_ens_addr(new ENSAddrCoder(714, 'BNB', new Bech32Coder(Bech32.TYPE_1, 'bnb
 define_ens_addr(new ENSAddrCoder(820, 'CLO', HexCoder));
 //eosioChain('HIVE', 825, 'STM'),
 define_ens_addr(new ENSAddrCoder(889, 'TOMO', HexCoder));
-//getConfig('HNT', 904, hntAddresEncoder, hntAddressDecoder),
+define_ens_addr(new ENSAddrCoder(904, 'HNT', new MapBytesCoder(Base58Check, (v, to_b) => {
+	if (to_b) return Uint8Array.of(0, ...v);
+	if (v[0] != 0) throw new Error('invalid prefix');
+	return v.slice(1);
+})));
 define_ens_addr(new ENSAddrCoder(931, 'RUNE', new Bech32Coder(Bech32.TYPE_1, 'thor')));
 define_ens_addr(new ENSAddrCoder(999, 'BCD', new BTCCoder([[0x00]], [[0x05]]), new SegwitCoder('bcd')))
 define_ens_addr(new ENSAddrCoder(1001, 'TT', HexCoder));
@@ -116,12 +120,14 @@ define_ens_addr(new ENSAddrCoder(1023, 'ONE', new Bech32Coder(Bech32.TYPE_1, 'on
 //getConfig('ONT', 1024, ontAddrEncoder, ontAddrDecoder),
 //  cardanoChain('ADA', 1815, 'addr'),
 //getConfig('SC', 1991, siaAddressEncoder, siaAddressDecoder),
-//getConfig('QTUM', 2301, bs58Encode, bs58Decode),
+define_ens_addr(new ENSAddrCoder(2301, 'QTUM', Base58Check));
 //eosioChain('GXC', 2303, 'GXC'),
-//getConfig('ELA', 2305, bs58EncodeNoCheck, bs58DecodeNoCheck),
+define_ens_addr(new ENSAddrCoder(2305, 'ELA', Base58BTC));
 //getConfig('NAS', 2718, nasAddressEncoder, nasAddressDecoder),
 //coinType: 3030,decoder: hederaAddressDecoder,encoder: hederaAddressEncoder, name: 'HBAR',
-//iotaBech32Chain('IOTA', 4218, 'iota'),
+define_ens_addr(new ENSAddrCoder(4218, 'IOTA', new MapBytesCoder(new Bech32Coder(Bech32.TYPE_1, 'iota'), (v, to_b) => {
+	return to_b ? v.slice(1) : Uint8Array.of(0, ...v);
+})));
 //getConfig('HNS', 5353, hnsAddressEncoder, hnsAddressDecoder),
 //getConfig('STX', 5757, c32checkEncode, c32checkDecode),
 define_ens_addr(new ENSAddrCoder(6060, 'GO', HexCoder));

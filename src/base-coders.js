@@ -13,6 +13,7 @@ export class Coder {
 	str() { throw new TypeError('bug: not implemented'); }
 }
 
+// callback is (s, true) to going to bytes
 export class MapStringCoder extends Coder {
 	constructor(coder, fn) {
 		super();
@@ -27,6 +28,7 @@ export class MapStringCoder extends Coder {
 	}
 }
 
+// callback is (v, true) if going to bytes
 export class MapBytesCoder extends Coder {
 	constructor(coder, fn) {
 		super();
